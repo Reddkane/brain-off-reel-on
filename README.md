@@ -45,6 +45,9 @@ missing-favicon 404. It is not a PWA asset set or a generator-added starter asse
 | `npm run start -- --hostname 127.0.0.1 --port 3000` | Serve the completed production build locally. |
 | `npm run check` | Typecheck, lint, test, and build in order; stop on failure. |
 
+CI (`.github/workflows/ci.yml`) runs `npm ci` and `npm run check` on Node 24 for
+pushes to `main` and for pull requests, with read-only permissions and no secrets.
+
 Direct versions are pinned in `package.json`, with transitive resolution in
 `package-lock.json`. Runtime dependencies are only Next, React, and React DOM.
 TypeScript 6.0.3 stays within the parser's supported range (<6.1); ESLint 9.39.5
