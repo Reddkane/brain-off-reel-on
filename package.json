@@ -11,6 +11,8 @@
     "typecheck": "next typegen && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.pure.json",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
+    "test:db:runner": "node --test tests/db/runner.test.mjs",
+    "test:db": "node tooling/db-test.mjs",
     "check": "npm run typecheck && npm run lint && npm test && npm run build"
   },
   "dependencies": {
