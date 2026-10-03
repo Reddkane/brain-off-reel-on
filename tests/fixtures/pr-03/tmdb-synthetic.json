@@ -1,0 +1,21 @@
+{
+  "synthetic": true,
+  "id": 900001,
+  "title": "Synthetic Movie",
+  "adult": false,
+  "video": false,
+  "release_date": "2025-01-01",
+  "runtime": 90,
+  "original_language": "en",
+  "overview": "Invented test overview",
+  "poster_path": "/synthetic.jpg",
+  "genres": [{"id": 900,"name": "Synthetic genre"}],
+  "production_companies": [],
+  "vote_average": 7.25,
+  "vote_count": 10,
+  "imdb_id": null,
+  "release_dates": {"id": 900001,"results": [{"iso_3166_1": "US","release_dates": [{"release_date": "2025-01-01T00:00:00.000Z","type": 3,"certification": "PG","note": "Invented note"}]}]},
+  "keywords": {"id": 900001,"keywords": [{"id": 901,"name": "Synthetic keyword"}]},
+  "credits": {"id": 900001,"cast": [{"id": 900002,"name": "Synthetic Person","order": 0}],"crew": [{"id": 900003,"name": "Synthetic Director","job": "Director"}]},
+  "external_ids": {"id": 900001,"imdb_id": null}
+}

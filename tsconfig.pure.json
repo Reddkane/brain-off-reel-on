@@ -1,13 +1,21 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "types": [],
     "strict": true,
     "noEmit": true,
     "module": "esnext",
     "moduleResolution": "bundler",
-    "isolatedModules": true
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
   },
-  "include": ["src/domain/**/*.ts", "src/recommendation/**/*.ts", "tests/types/*.typecheck.ts"]
+  "include": [
+    "src/domain/**/*.ts",
+    "src/recommendation/**/*.ts",
+    "tests/types/*.typecheck.ts"
+  ]
 }

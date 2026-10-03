@@ -1,0 +1,1 @@
+{"version":"discovery-v1","synthetic":true,"region":"US","providerIds":["900101","900102","900103"],"mappingVersion":"origin-v1","limits":{"pages":2,"operations":16,"titles":10,"details":10,"attempts":30,"durationMs":60000}}

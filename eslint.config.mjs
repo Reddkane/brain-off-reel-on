@@ -2,11 +2,18 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTypescript from "eslint-config-next/typescript";
 import pureBoundary from "./tooling/eslint/pure-boundary.mjs";
+import effectBoundary from "./tooling/eslint/effect-boundary.mjs";
 
 export default defineConfig([
   ...nextVitals,
   ...nextTypescript,
   globalIgnores([".next/**", "node_modules/**", "coverage/**", ".cache/**", "**/*.tsbuildinfo", "next-env.d.ts"]),
+  {
+    files: ["src/**/*.{ts,tsx,mjs,js}", "scripts/**/*.ts"],
+    ignores: ["src/domain/**", "src/recommendation/**"],
+    plugins: { effects: { rules: { boundary: effectBoundary } } },
+    rules: { "effects/boundary": "error" },
+  },
   {
     files: ["src/domain/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}", "src/recommendation/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"],
     linterOptions: { noInlineConfig: true },

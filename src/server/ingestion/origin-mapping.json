@@ -1,0 +1,6 @@
+{
+  "version": "origin-v1",
+  "rules": [],
+  "missingCategories": ["streamer_produced_financed", "traditional_studio", "independent"],
+  "limitations": "No official TMDB company-ID correspondence and period-specific production evidence verified for this release. All origin probes disabled; all origin results unknown. Synthetic rules are test-only."
+}
