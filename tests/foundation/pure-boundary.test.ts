@@ -86,6 +86,7 @@ describe.each(["domain", "recommendation"] as const)("%s pure boundary", (area) 
     "../app/missing",
     "../components/missing",
     "../server/db/client",
+    "../server/db/pg-store.ts",
     "../../tests/fixtures/synthetic-identities", // Existing fixture target.
     "../../tooling/eslint/pure-boundary.mjs", // Existing tooling target.
     "../domain/../server/db/client",

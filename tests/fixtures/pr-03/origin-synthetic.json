@@ -1,0 +1,5 @@
+{"version":"synthetic-origin-v1","missingCategories":[],"rules":[
+  {"source":"tmdb","externalId":"900201","name":"Synthetic Streamer","scope":"company","group":"streamer_produced_financed","relationship":"production","from":"2000-01-01","through":null,"reference":"https://example.invalid/synthetic-streamer","evidence":"Invented production evidence","checkedAt":"2026-01-01","limitations":"SYNTHETIC TEST DATA"},
+  {"source":"tmdb","externalId":"900202","name":"Synthetic Studio","scope":"company","group":"traditional_studio","relationship":"production","from":"2000-01-01","through":null,"reference":"https://example.invalid/synthetic-studio","evidence":"Invented production evidence","checkedAt":"2026-01-01","limitations":"SYNTHETIC TEST DATA"},
+  {"source":"tmdb","externalId":"900203","name":"Synthetic Independent","scope":"company","group":"independent","relationship":"financing","from":"2000-01-01","through":null,"reference":"https://example.invalid/synthetic-independent","evidence":"Invented financing evidence","checkedAt":"2026-01-01","limitations":"SYNTHETIC TEST DATA"}
+]}
