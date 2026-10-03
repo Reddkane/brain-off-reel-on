@@ -6,11 +6,11 @@ A movie picker for low-effort viewing, with recommendations informed by taste, s
 
 ## Status
 
-PR 1 foundation: a static Next.js placeholder, pure domain/recommendation boundaries, branded identities, and foundation checks. Movie picking is not implemented. No infrastructure or deployment has been created.
+PR 1 foundation and PR 2 schema: a static Next.js placeholder, pure boundaries, branded identities, and PostgreSQL storage with grants/RLS and disposable synthetic tests. Movie picking is not implemented. No hosted infrastructure or deployment has been created.
 
 See [the architecture plan](docs/architecture.md) for the product scope, data model, recommendation approach, evaluation protocol, PR roadmap, and recommended coding models.
 
-Before implementation, read [AGENTS.md](AGENTS.md), the [engineering standards and release gates](docs/engineering.md), and the [PR 1 foundation plan](docs/plans/pr-01-foundation.md).
+Before implementation, read [AGENTS.md](AGENTS.md), the [engineering standards and release gates](docs/engineering.md), and the current [PR 2 schema plan and evidence](docs/plans/pr-02-schema.md).
 
 ## Local setup
 
@@ -29,7 +29,7 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
 Open http://127.0.0.1:3000/ and stop the server with Ctrl+C.
-No environment files, credentials, external APIs, real catalog, or database are needed.
+No environment files, credentials, external APIs, real catalog, or database are needed for the app or foundation checks.
 Local `.env*` files, generated Next types, and build/dependency/cache output are ignored.
 Next's `agentRules: false` preserves the repository-owned `AGENTS.md`; this is the only
 Next configuration needed for PR 1.
@@ -44,9 +44,64 @@ missing-favicon 404. It is not a PWA asset set or a generator-added starter asse
 | `npm run build` | Build the production placeholder. |
 | `npm run start -- --hostname 127.0.0.1 --port 3000` | Serve the completed production build locally. |
 | `npm run check` | Typecheck, lint, test, and build in order; stop on failure. |
+| `npm run test:db:runner` | Docker-independent Node lifecycle/refusal tests; no npm dependencies needed. |
+| `npm run test:db` | Runner tests, disposable PostgreSQL schema/access suites, expected-red controls, final green and fresh reset replay. |
 
 CI (`.github/workflows/ci.yml`) runs `npm ci` and `npm run check` on Node 24 for
 pushes to `main` and for pull requests, with read-only permissions and no secrets.
+Its separate database job runs `docker version` and the same `npm run test:db`,
+without npm installation, secrets, published ports or persistent database storage.
+
+## Disposable database checks
+
+Use Docker Desktop with WSL2 and Linux containers on Windows; Linux CI uses its
+runner-provided Docker engine. Confirm `docker version` succeeds before running
+`npm run test:db`. First use downloads the official PostgreSQL 17 image pinned to
+a multi-architecture index in `tooling/db-image.txt`; the runner logs the resolved
+architecture/image and server patch. Missing Docker fails the command.
+
+The runner creates a unique `bor-pr02-*` container, with `--network none`, no
+ports or host mounts, and tmpfs database storage. Trust authentication exists only
+inside that disposable container. Every psql call targets loopback TCP inside
+the recorded, inspected container ID. There is no external database/reset mode,
+`.env` loading or connection URL. Host database environment variables cannot
+select a SQL target. Startup is bounded to 30 seconds and the run to five minutes.
+Cleanup rechecks identity/isolation, removes only the created ID, and verifies it
+is gone. Each rerun recreates the database; applied migrations are never replayed
+in the same database. After an unhandled process kill, inspect the recorded ID
+and matching run labels/network/tmpfs before emergency removal as documented
+in the plan. Never remove containers by a guessed name or broad filter.
+
+`supabase/migrations` owns the three ordered, transactional migrations. They
+require PostgreSQL 17 and the platform roles, `auth.users(id)`, `auth.uid()` and
+explicit owner USAGE/REFERENCES privileges; they do not provision Auth. Tests
+use a disposable shim in `tests/db/bootstrap.sql`, a non-superuser BYPASSRLS
+migration owner, and invented fixtures in `tests/fixtures/pr-02-synthetic.sql`.
+Ordinary-role assertions prove actual constraints/grants/RLS; SET ROLE and claim
+GUCs simulate a trusted gateway and do not prove identity verification, Supabase
+platform compatibility or endpoint authorization. Service credentials bypass RLS
+and require application authorization in PR 7.
+
+Classification/history/evidence records are append-only. Snapshot children must
+be inserted with their server-stamped xid8 parent in the same transaction, offers
+before observations. PR 7's logical-restore rehearsal must demonstrate that layout.
+Plain account/profile cascades remove selected personal graphs without deferring
+constraints. Direct immutable deletion is denied to the owner and service role.
+Session deletion is likewise denied directly and permitted through profile/account
+cascades. Movies with classification or snapshot history cannot be hard-deleted;
+history-free movies may still cascade their external mappings, credits and
+availability tracks without observations. Other nested FK cascades are permitted under the documented trigger-depth assumption.
+The two read-free immutable validators have authenticated/service EXECUTE grants
+for real named CHECKs; the four invoker trigger routines have no API EXECUTE grants.
+Every future migration must explicitly revoke PUBLIC/API access on new functions
+in their creation transaction: PostgreSQL defaults grant PUBLIC EXECUTE, and a
+schema-scoped default revoke cannot remove it. Platform-wide defaults remain
+unchanged. No SECURITY DEFINER function or API schema exposure is configured.
+
+PR 7 must decide Data API exposure and explicitly accept or revoke the existing
+personal browser-write grants if exposed. HTTP validation/rate limits/CSRF controls
+would not protect direct PostgREST writes. Actual personal preferences remain
+unconfirmed; fixture values carry no product meaning.
 
 Direct versions are pinned in `package.json`, with transitive resolution in
 `package-lock.json`. Runtime dependencies are only Next, React, and React DOM.
@@ -64,6 +119,9 @@ Do not override incompatible peers. No additional SDK, UI framework, or validati
 | `src/recommendation` | Pure engine boundary; imports only recommendation/domain through relative paths. PR 1 exports a type only. |
 | `tests` | Synthetic identity fixtures, compile-only type controls, and real-config boundary tests. Never imported by production source. |
 | `tooling/eslint` | Lexical area containment; no filesystem resolution. Existing lint rules own packages/syntax/assertions. |
+| `supabase/migrations` | PostgreSQL schema, constraints, privileges, policies and invariant triggers. |
+| `tests/db`, `tests/fixtures/pr-02-synthetic.sql` | Disposable platform shim, assertions, synthetic inserts and rollback-only controls. |
+| `tooling/db-test.mjs`, `tooling/db-image.txt` | Disposable Docker lifecycle and official multi-architecture image pin. |
 
 Future ownership, documented but not yet created: `src/components` for reusable UI;
 `src/server/db`, `src/server/providers`, `src/server/ingestion`, and
@@ -95,6 +153,6 @@ all six brand pairs in both directions and raw string/number rejection. The inde
 pure project includes global-leak checks; the app project excludes that globals file.
 These files are not runtime tests.
 
-PR 1 deliberately defers movie data/adapters, database/Auth, ingest/classification,
-filtering/ranking, APIs/sessions/feedback, settings, CLI, PWA, CI, and deployment.
-The architecture and revised PR plan own those later stages and acceptance criteria.
+PR 2 adds storage only. Adapters, provider resolution, Auth, ingestion,
+classification workflows, recommendation logic, APIs, settings, PWA and deployment
+remain in later owning PRs. The architecture and current plan own their acceptance criteria.
