@@ -1,5 +1,6 @@
 import { createVitest } from "vitest/node";
 import { withDisposable } from "./metadata-disposable.ts";
+import { metadataDatabaseCodes } from "./metadata-db-diagnostics.ts";
 
 try {
   if (process.argv.length !== 2)
@@ -43,11 +44,13 @@ try {
     try {
       await runner.start();
 
-      if (timedOut ||
-        runner.state.getUnhandledErrors().length ||
-        runner.state.getFiles().length !== 3 ||
-        runner.state.getFiles().some(f => f.result?.state !== "pass"))
-        throw new Error("metadata_database_failed");
+      if (timedOut) throw new Error("metadata_suite_timeout");
+      if (runner.state.getUnhandledErrors().length)
+        throw new Error("metadata_unhandled_errors");
+      if (runner.state.getFiles().length !== 3)
+        throw new Error("metadata_suite_inventory");
+      if (runner.state.getFiles().some(f => f.result?.state !== "pass"))
+        throw new Error("metadata_suite_failed");
     } finally {
       clearTimeout(suiteTimer);
       target.signal.removeEventListener("abort", cancel);
@@ -58,7 +61,7 @@ try {
   }, {
     signal
   });
-} catch {
-  console.error("metadata_database_failed");
+} catch (error) {
+  console.error(metadataDatabaseCodes(error).join(" "));
   process.exitCode = 1;
 }
