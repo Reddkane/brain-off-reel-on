@@ -42,6 +42,8 @@ jobs:
           node-version-file: .nvmrc
       - run: node --version
       - run: docker version
+      # Pull outside the runners' per-command Docker timeouts.
+      - run: docker pull "$(cat tooling/db-image.txt)"
       - run: npm run test:db
   metadata-database:
     runs-on: ubuntu-latest
@@ -58,6 +60,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: docker version
+      # Pull outside the runners' per-command Docker timeouts.
+      - run: docker pull "$(cat tooling/db-image.txt)"
       - run: npm run test:metadata:db
       - run: npm run metadata:local -- --scenario repeat
       - run: npm run metadata:dry-run -- --config tests/fixtures/pr-03/discovery-synthetic.json --as-of 2026-10-03
