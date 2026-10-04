@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { readFile, writeFile, mkdtemp, unlink, rmdir, access } from "node:fs/promises";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import pg from "pg";
 import { catalogPool, completedSetup, createCatalogContainer, docker, inspectCatalog, localCommand, ready, refuseCollisions, setupSchema } from "../../scripts/catalog-local.ts";
 import { catalogCommand } from "../../scripts/catalog-import.ts";
@@ -85,7 +86,7 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
       await assert.rejects(setupSchema(admin, runtimePassword), /setup_nonempty/);
     });
     await t.test("actual operator path: image gate, exclusive credentials, setup/repeat/inspect/stop/delayed start/running start", async () => {
-      const directory = await mkdtemp(resolve(".cache/real-catalog/operator-test-"));
+      const directory = await mkdtemp(join(tmpdir(), "bor-catalog-operator-test-"));
       const operatorResources = {
         ...resources,
         container: `${resources.container}-operator`,
