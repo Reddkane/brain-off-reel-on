@@ -20,7 +20,10 @@
     "ratings:dry-run": "node scripts/ratings.ts",
     "metadata:local": "node tooling/metadata-local.ts",
     "test:metadata:db": "node tooling/metadata-db-test.ts",
-    "test:metadata:controls": "node tooling/metadata-mutations.ts"
+    "test:metadata:controls": "node tooling/metadata-mutations.ts",
+    "catalog:local": "node scripts/catalog-local.ts",
+    "catalog:import": "node scripts/catalog-import.ts",
+    "test:catalog:db": "node --test tests/db/catalog.test.ts"
   },
   "dependencies": {
     "next": "16.3.8",

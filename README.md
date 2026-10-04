@@ -200,6 +200,47 @@ report conflicts by row indices, preserve exclusions and apply all or none.
 Identical reimport leaves personal timestamps unchanged. Already committed catalog
 resolutions survive a personal conflict. Offline output never logs personal values.
 
-The separate real-catalog step, availability, Auth, classification,
+The credential-free real-catalog composition is documented below. Availability, Auth, classification,
 recommendations, APIs, settings, PWA and deployment remain outside this implementation.
 The architecture and current plan own acceptance criteria and limitations.
+
+## Separate local catalog composition
+
+The [approved plan](docs/plans/real-catalog.md) owns setup, bounds, validation and live
+gates. `npm run test:catalog:db` checks synthetic operator/import paths and A1
+persistence locally and in CI. No retained setup or live import has been performed.
+
+After **separate retained setup authorization**, cache the exact image and run:
+
+```powershell
+docker pull (Get-Content -LiteralPath tooling/db-image.txt -Raw).Trim()
+npm run catalog:local -- setup
+npm run catalog:local -- inspect
+npm run catalog:local -- stop
+npm run catalog:local -- start
+```
+
+Setup uses fixed names, `127.0.0.1:55432`, unchanged migrations and a non-admin login.
+Start waits for readiness and accepts an already-running owned container; stop
+retains its volume. Missing image, collisions and partial setup refuse; plan §3
+documents exact inspected, separately authorized manual disposal.
+
+Keep `.env.local` and `.cache/real-catalog/private/` owner-private. Setup generates
+separate `setup.json`/`runtime.json`; import reads only the runtime credential.
+Copy `config/catalog-local.example.json` there as `config.json`; exact provider
+IDs/names remain unverified. Default validation reads no credentials or calls/writes:
+
+```powershell
+npm run catalog:import -- --config .cache/real-catalog/private/config.json --as-of YYYY-MM-DD
+```
+
+Only after terms/retention review and **separate live authorization**, add `--live`.
+`--list-providers` writes a dated `provider-list-<execution-id>.json`; unresolved
+services stop before discovery. Select the basename in `providerListing` and verify
+mappings/qualifications/omissions. Inline listing shares the import's budgets.
+
+Private `run-report-<run-id>.json` files are exclusive and never overwrite history;
+post-commit readback failures record committed progress when report storage succeeds.
+Console output has safe codes/counts/scope. Exit 0 means completed plus readback,
+2 bounded partial, 1 failure. No ratings, offers, classification or personal data
+are written; watchability and arrival freshness remain unmeasured.

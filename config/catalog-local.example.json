@@ -1,0 +1,14 @@
+{
+  "version": "catalog-local-v1",
+  "region": "US",
+  "mappingVersion": "origin-v1",
+  "providerListing": null,
+  "services": [
+    { "service": "Netflix", "providerId": null, "providerName": null, "checkedAt": null, "qualification": null, "omission": "Exact US TMDB mapping unverified; without ads, direct" },
+    { "service": "HBO Max", "providerId": null, "providerName": null, "checkedAt": null, "qualification": null, "omission": "Exact US TMDB mapping unverified; Standard, no ads, direct" },
+    { "service": "Disney+", "providerId": null, "providerName": null, "checkedAt": null, "qualification": null, "omission": "Exact US TMDB mapping unverified; Disney+/Hulu bundle with ads, no Live TV" },
+    { "service": "Hulu", "providerId": null, "providerName": null, "checkedAt": null, "qualification": null, "omission": "Exact US TMDB mapping unverified; Disney+/Hulu bundle with ads, no Live TV" }
+  ],
+  "terms": { "accepted": false, "checkedAt": null, "source": null, "decision": null },
+  "limits": { "pages": 2, "operations": 40, "titles": 100, "details": 100, "attempts": 200, "catalog": 1000, "durationMs": 600000, "databaseMs": 120000 }
+}
