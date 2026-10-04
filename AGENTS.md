@@ -23,6 +23,7 @@
 - Run the checks required by the current plan and affected behavior. Verify the actual configuration and execution paths, not only examples that mirror the implementation.
 - Keep pure tests independent of live services and credentials. Verify user-facing behavior directly when relevant.
 - Treat external inputs as untrusted. Protect secrets and personal data; enforce authorization at effect boundaries.
+- Never print or expose secrets from `.env.local` or other credential files in chat, tool output, logs, diffs, or commits. Do not dump credential files or run commands that echo secret values, including environment-variable dumps. Validate credentials without displaying them; report only presence and success/failure. Use placeholders in examples.
 - Keep installs reproducible and review dependency changes. Exclude secrets and generated output from proposed changes.
 - Report checks and their evidence accurately, including failures and anything unverified. Restore temporary validation mutations before handoff.
 

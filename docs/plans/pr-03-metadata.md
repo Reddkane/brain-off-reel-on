@@ -253,6 +253,9 @@ Risks: catalog drift/incomplete typed dates, undetected re-releases/cuts without
 
 ### Separate real-catalog step immediately after PR 3 (H3)
 
+The approved scoped implementation and current acceptance evidence now live in
+[the real-catalog plan](real-catalog.md). PR 3 evidence below remains historical.
+
 The user confirms this step before PR 4/5 live validation. Scope it separately from PR 3: persistent local Postgres, retained-data setup/role configuration (not the disposable bootstrap), private TMDB_READ_ACCESS_TOKEN through an ignored env file, user-supplied exact subscribed provider IDs, supervised bounded real metadata run and readback/coverage diagnostics. Add only trusted composition/configuration around the already-tested provider, pg store, ingest and diagnostics; no new ingest/identity/evidence logic. Persistent lifecycle must never share destructive disposable reset/teardown code. Define the exact retained target/ownership authorization and safe setup before executing; personal ratings import is not implied.
 
 Start with at most 100 titles, 40 discovery operations, one optional list, 200 attempts (141 initial + 59 retry headroom), 10-minute deadline and 1,000-record catalog cap; read back mappings/evidence/counts and report unknowns/truncation/failures. Catalog operations run with the approved service-role authorization boundary; no public API/Auth/UI/availability observations/classification/ranking is added. No paid/cloud resources are needed: local Docker Postgres has no database-service charge, and the user reports no cost blocker. TMDB noncommercial terms, required attribution and caching/retention compatibility are gates before the supervised run; commercial use needs a separate license. PR 3 does not perform this step, obtain a token or call credentialed APIs. Later live checks supplement offline acceptance rather than replace it.
