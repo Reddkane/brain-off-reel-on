@@ -1,8 +1,7 @@
 import type { Pool, PoolClient } from "pg";
-import { columns } from "./metadata-sql.ts";
+import { columns, columnExpression } from "./metadata-sql.ts";
 // Identifiers are PR 3's fixed code-owned columns, never input or SQL text rewrites.
-const timestampColumns = new Set(["release_date_checked_at", "certification_checked_at", "origin_checked_at", "metadata_refreshed_at"]);
-const readAggregates = `SELECT id,jsonb_build_array(${columns.map(column => timestampColumns.has(column) ? `CASE WHEN ${column} IS NULL THEN NULL ELSE to_char(${column} AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END` : column).join(",")}) AS aggregate FROM app.movies ORDER BY id`;
+const readAggregates = `SELECT id,jsonb_build_array(${columns.map(columnExpression).join(",")}) AS aggregate FROM app.movies ORDER BY id`;
 export async function localCatalogGuard(client: PoolClient): Promise<void> {
   try {
     const result = await client.query("SELECT current_database() AS database, session_user AS login, (SELECT count(*)=1 AND bool_and(name='bor-catalog-local-v1') FROM local_support.marker) AS valid");

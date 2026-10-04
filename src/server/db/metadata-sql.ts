@@ -24,16 +24,21 @@ export const columns = [
   "vote_count",
   "metadata_source",
   "metadata_refreshed_at"
-];
+] as const;
 
 // Identifiers are code constants, never caller-controlled. All values are parameters.
 export const insertMovie = `INSERT INTO app.movies (${columns.join(",")}) VALUES (${columns.map((_, i) => `$${i + 1}`).join(",")}) RETURNING id`;
 
 export const updateMovie = `UPDATE app.movies SET ${columns.map((c, i) => `${c}=$${i + 1}`).join(",")},updated_at=now() WHERE id=$24`;
 
-export const readMovie = `SELECT jsonb_build_array(${columns.map(
-  c => ["release_date_checked_at", "certification_checked_at", "origin_checked_at", "metadata_refreshed_at"].includes(c) ? `CASE WHEN ${c} IS NULL THEN NULL ELSE to_char(${c} AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END` : c
-).join(",")}) AS aggregate FROM app.movies WHERE id=$1 FOR UPDATE`;
+// Accept only code-owned columns; timestamps match canonical metadata values.
+export function columnExpression(column: typeof columns[number]): string {
+  return ["release_date_checked_at", "certification_checked_at", "origin_checked_at", "metadata_refreshed_at"].includes(column)
+    ? `CASE WHEN ${column} IS NULL THEN NULL ELSE to_char(${column} AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END`
+    : column;
+}
+
+export const readMovie = `SELECT jsonb_build_array(${columns.map(columnExpression).join(",")}) AS aggregate FROM app.movies WHERE id=$1 FOR UPDATE`;
 
 export function movieValues(m: MovieMetadata): unknown[] {
   return [

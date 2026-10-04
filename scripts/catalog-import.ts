@@ -421,13 +421,15 @@ export async function catalogCommand(args: readonly string[], io: CatalogIO): Pr
       !reportAttempted) {
       reportAttempted = true;
       try {
+        // Local failure evidence gets a fixed grace even after the work deadline.
+        // This signal authorizes no provider or database work.
         await io.writeReport({
           ...pendingReport,
           outcome: "failed",
           readback: "failed",
           failureCode: code,
           elapsedMs: io.now() - start
-        }, AbortSignal.timeout(Math.max(1, deadline - Date.now())));
+        }, AbortSignal.timeout(2000));
       }
       catch {
         io.output("catalog_report_failed");

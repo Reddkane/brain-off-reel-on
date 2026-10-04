@@ -494,6 +494,51 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
       assert.equal(output.at(-1), "catalog_command_failed");
       assert(!output.join("\n").includes(runtimePassword));
     });
+    await t.test("expired finalization deadline still permits a local failure report", async () => {
+      const realNow = Date.now;
+      const failing: CatalogIO = {
+        ...io,
+        now: realNow,
+        pool: () => {
+          const created = pool();
+          let readbacks = 0, reading = false;
+          created.on("connect", client => {
+            const query = client.query.bind(client);
+            Object.defineProperty(client, "query", {
+              value: async (...parameters: unknown[]) => {
+                const sql = parameters[0];
+                if (typeof sql === "string" && sql.startsWith("BEGIN ISOLATION LEVEL REPEATABLE READ")) {
+                  readbacks++;
+                  reading = true;
+                }
+                const result = await Reflect.apply(query, client, parameters);
+                if (sql === "COMMIT" && reading) {
+                  reading = false;
+                  if (readbacks === 2) Date.now = () => realNow() + 600001;
+                }
+                return result;
+              }
+            });
+          });
+          return created;
+        },
+        writeReport: async (report, signal) => {
+          Date.now = realNow;
+          await new Promise(resolve => setTimeout(resolve, 25));
+          signal?.throwIfAborted();
+          reports.push(report);
+        }
+      };
+      try {
+        const before = reports.length;
+        assert.equal(await catalogCommand(args, failing), 1);
+        assert.equal(reports.length, before + 1);
+        assert.equal((reports.at(-1) as { failureCode: string }).failureCode, "finalization_deadline");
+        assert.equal(output.at(-1), "finalization_deadline");
+      } finally {
+        Date.now = realNow;
+      }
+    });
     await t.test("post-commit readback failure preserves titles and writes a failure report with committed progress", async () => {
       const failing = {
         ...io,
