@@ -1,6 +1,13 @@
 import { expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { metadataDatabaseCodes } from "../../tooling/metadata-db-diagnostics.ts";
+import { docker } from "../../tooling/metadata-disposable.ts";
+
+it("reports a Docker command killed by its timeout as docker_timeout, not docker_unavailable", async () => {
+  // An implicit image pull can outlast the per-command timeout on a fresh CI runner.
+  await expect(docker(["version"], "", AbortSignal.abort())).rejects.toThrow("docker_timeout");
+  expect(metadataDatabaseCodes(new Error("docker_timeout"))).toEqual(["docker_timeout"]);
+});
 
 it("the actual metadata DB entry point emits a safe argument refusal before Docker work", () => {
   const result = spawnSync(process.execPath, ["tooling/metadata-db-test.ts", "unsupported"], {

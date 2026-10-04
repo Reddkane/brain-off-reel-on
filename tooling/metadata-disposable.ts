@@ -38,7 +38,8 @@ export const docker: Docker = (args, input = "", signal = AbortSignal.timeout(30
   // Never forward Docker stderr (may echo bootstrap stdin or configuration).
   child.stderr.resume();
 
-  child.on("error", () => reject(new Error("docker_unavailable")));
+  // Abort (timeout/cancel) is distinct from Docker being absent.
+  child.on("error", error => reject(new Error(error.name === "AbortError" ? "docker_timeout" : "docker_unavailable")));
 
   child.on("close", code => resolve({
     code: code ?? 1,

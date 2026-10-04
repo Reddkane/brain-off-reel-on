@@ -1,6 +1,6 @@
 // Never forward raw Docker, driver, filesystem or runner errors.
 const codes = new Set([
-  "no_arguments", "docker_unavailable", "docker_version_failed",
+  "no_arguments", "docker_unavailable", "docker_timeout", "docker_version_failed",
   "docker_network_failed", "docker_run_failed", "docker_inspect_failed",
   "docker_exec_failed", "docker_image_failed", "docker_rm_failed",
   "docker_ps_failed", "container_binding", "container_isolation",
