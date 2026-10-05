@@ -11,7 +11,7 @@ export const sweepCodes = [
   "catalog_limit", "metadata_failed", "readback_mismatch", "report_failed",
   "terms_required", "detail_budget", "credential_invalid", "config_invalid",
   "sweep_too_large", "service_partial", "sweep_failed", "combined_page_limit",
-  "capacity_blocked", "complete",
+  "capacity_blocked", "private_cleanup_failed", "complete",
 ] as const;
 
 export type SweepCode = typeof sweepCodes[number];

@@ -220,6 +220,15 @@ export async function runSweeps(config: SweepConfig, io: SweepIO) {
     finally {
       databaseMs += performance.now() - lockStarted;
     }
+    if (io.expirePrivateFiles) {
+      try {
+        privateCleanup = await io.expirePrivateFiles(io.now(), lock.signal);
+        await lock.check();
+      }
+      catch {
+        throw new SweepError("private_cleanup_failed");
+      }
+    }
     wm = { ...wm, signal: lock.signal };
     // Provider cancellation follows the lifetime of the lock connection.
     before = await io.watchmode.status(wm);
@@ -323,7 +332,6 @@ export async function runSweeps(config: SweepConfig, io: SweepIO) {
     if (outcome !== "failed" && io.now() < workDeadline) {
       await enrichPromoted(lock.signal);
       if (config.evidence?.enabled) {
-        if (io.expirePrivateFiles) privateCleanup=await io.expirePrivateFiles(io.now(),lock.signal);
         evidence=await runEvidence(config,{store:evidenceStore,database,watchmode:io.watchmode,context:wm,now:io.now});
         if (evidence.sourceFailures) { outcome='partial'; if (code==='complete') code='service_partial'; }
         if (evidence.code!=='complete') {outcome='partial';if(code==='complete')code=evidence.code;}

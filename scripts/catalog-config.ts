@@ -28,6 +28,7 @@ const diagnosticCodes = new Set([
   "container_identity", "container_binding", "container_network", "container_image",
   "container_id", "resource_identity", "resource_occupied", "port_occupied",
   "docker_failed", "credential_invalid", "credential_file_exists", "startup_failed",
+  "upgrade_required", "upgrade_state_unknown", "upgrade_failed_inspect_required", "setup_credential_failed",
   "setup_nonempty", "setup_failed_inspect_required", "setup_incomplete",
   "runtime_role_invalid", "runtime_membership_invalid", "target_guard",
   "regular_file_required", "file_limit", "private_path_required", "json_limit",
