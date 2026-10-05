@@ -26,6 +26,8 @@ export async function readCatalog(pool: Pool, deadline: number) {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     await client.query("SET LOCAL ROLE service_role");
     await client.query("SELECT set_config('statement_timeout',$1,true)", [String(Math.max(1, Math.min(5000, deadline - Date.now())))]);
+    // The retained baseline must be explicitly upgraded before this read model is used.
+    await client.query("SELECT metadata_state FROM app.movies LIMIT 0");
     const movies = (await client.query("SELECT * FROM app.movies ORDER BY id")).rows;
     const aggregates = (await client.query(readAggregates)).rows;
     const mappings = (await client.query("SELECT * FROM app.movie_external_ids ORDER BY movie_id,source")).rows;
@@ -45,10 +47,11 @@ export async function readCatalog(pool: Pool, deadline: number) {
       (SELECT count(*) FROM app.selection_sessions)::int AS sessions,
       (SELECT count(*) FROM app.recommendations)::int AS recommendations,
       (SELECT count(*) FROM app.feedback_events)::int AS feedback`)).rows[0];
-    if (movies.length > 1000 ||
+    if (movies.some(m=>!['active','retired'].includes(m.metadata_state)) ||
+      movies.filter(m => m.metadata_state === 'active').length > 1000 ||
       new Set(mappings.map(m => `${m.source}/${m.external_id}`)).size !== mappings.length ||
       mappings.some(m => !movies.some(v => v.id === m.movie_id)) ||
-      movies.some(m => !mappings.some(k => k.movie_id === m.id &&
+      movies.some(m => m.metadata_state === 'active' && !mappings.some(k => k.movie_id === m.id &&
         k.source === "tmdb")) ||
       credits.some(c => !movies.some(m => m.id === c.movie_id)))
       throw new Error("readback_integrity");

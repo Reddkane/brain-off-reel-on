@@ -15,7 +15,6 @@ import type { StoreContext } from "../../src/server/db/metadata-store.ts";
 import type { WatchmodePage } from "../../src/server/providers/watchmode.ts";
 test("Availability: sweeps synthetic transport and disposable PostgreSQL acceptance", { timeout: 240000 }, async (t) => {
   await withDisposable(async (db) => {
-    await db.admin.query(await readFile(new URL("../../supabase/migrations/20261005000001_availability_sweeps.sql", import.meta.url), "utf8"));
     const f = await fixtures(), store = createWatchmodeStore(db.pool, db.guard);
     let now = Date.parse("2026-10-05T00:00:00.000Z"), generation = 0;
     const ctx = (): StoreContext => ({ signal: db.signal, deadline: Date.now() + 10000 });

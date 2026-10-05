@@ -10,6 +10,7 @@ import { readMovie, canonicalValues } from "./metadata-sql.ts";
 import { instant } from "../providers/tmdb-validation.ts";
 import type { SweepCode } from "../providers/sweep-error.ts";
 import type { EnrichmentOutcome } from "../../domain/availability-sweeps.ts";
+import type { EvidenceSweep } from "../../domain/availability-evidence.ts";
 export interface SweepState {
   readonly id: string;
   readonly source: number;
@@ -27,6 +28,12 @@ export interface PromotedSweep {
     readonly observedAt: string;
     readonly coolingDown: boolean;
   })[];
+}
+export interface PreparedHistory {
+  readonly source: number;
+  readonly generation: string;
+  readonly now: string;
+  readonly sweeps: readonly EvidenceSweep[];
 }
 export function createWatchmodeStore(pool: Pool, guard: (client: PoolClient) => Promise<void>) {
   if (!pool.listenerCount("error"))
@@ -99,7 +106,50 @@ export function createWatchmodeStore(pool: Pool, guard: (client: PoolClient) => 
       ELSE interval '0 seconds' END`, [now])).rows;
     return rows.map(r => r.tmdb_id as string);
   }
+  async function prepareHistory(source: number, generation: string, now: string, context: StoreContext): Promise<PreparedHistory> {
+      return transaction(context, async client => {
+        const rows = (await client.query(`SELECT s.id,s.generation,s.observed_at AS started,e.observed_at AS completed,
+          e.outcome,
+          (SELECT min(p.observed_at) FROM app.watchmode_pages p WHERE p.sweep_id=s.id) AS oldest,
+          (SELECT count(*) FROM app.watchmode_pages p WHERE p.sweep_id=s.id)=
+            (SELECT greatest(1,min(p.total_pages)) FROM app.watchmode_pages p WHERE p.sweep_id=s.id)
+          AND NOT EXISTS(SELECT 1 FROM app.watchmode_pages p WHERE p.sweep_id=s.id AND
+            (p.unresolved_count<>0 OR p.row_count<>(SELECT count(*) FROM app.watchmode_memberships mm WHERE mm.sweep_id=p.sweep_id AND mm.page=p.page)))
+          AND (SELECT count(*) FROM app.watchmode_memberships mm WHERE mm.sweep_id=s.id)+
+            (SELECT coalesce(sum(p.excluded_count),0) FROM app.watchmode_pages p WHERE p.sweep_id=s.id)=
+            (SELECT min(p.total_results) FROM app.watchmode_pages p WHERE p.sweep_id=s.id) AS intact,
+          extract(epoch FROM policy.watchmode_window)*1000 AS window_ms
+          FROM app.watchmode_sweeps s JOIN app.watchmode_sweep_events e ON e.sweep_id=s.id
+          CROSS JOIN app.provider_retention_policy policy
+          WHERE s.source_id=$1 AND s.generation=$2 AND e.observed_at<=$3::timestamptz
+          AND e.observed_at >= $3::timestamptz-policy.watchmode_window
+          ORDER BY s.observed_at DESC,s.id DESC LIMIT 257`, [source,generation,now])).rows;
+        // Refuse an incomplete retained replay rather than inventing a drift-free prefix.
+        if (rows.length>256) return {source,generation,now,sweeps:[]};
+        rows.reverse();
+        const sweeps: EvidenceSweep[] = rows.map(r => ({ id: r.id, generation: r.generation,
+          startedAt: r.started.getTime(), completedAt: r.completed.getTime(),
+          expiresAt: Math.min(r.started.getTime(), r.oldest?.getTime() ?? r.started.getTime()) + Number(r.window_ms),
+          outcome: r.outcome === "complete" && r.intact ? "complete" : "interrupted",
+          presenceAt: null }));
+        return {source,generation,now,sweeps};
+      });
+  }
   return {
+    transaction,
+    prepareHistory,
+    async history(source: number, generation: string, watchmodeId: number, now: string, context: StoreContext, prepared?: PreparedHistory): Promise<readonly EvidenceSweep[]> {
+      const retained = prepared ?? await prepareHistory(source,generation,now,context);
+      if (retained.source!==source || retained.generation!==generation || retained.now!==now) throw new SweepError('request_invalid');
+      if (!retained.sweeps.length) return [];
+      return transaction(context, async client => {
+        // Primary-key lookups only; completeness is movie-independent and prepared once per run.
+        const members = (await client.query(`SELECT sweep_id,observed_at FROM app.watchmode_memberships
+          WHERE sweep_id=ANY($1::uuid[]) AND watchmode_id=$2`, [retained.sweeps.map(s=>s.id),watchmodeId])).rows;
+        const presence = new Map(members.map(m=>[m.sweep_id,m.observed_at.getTime()]));
+        return retained.sweeps.map(s=>({...s,presenceAt:presence.get(s.id)??null}));
+      });
+    },
     async recoverInterrupted(now: string, context: StoreContext) {
       return transaction(context, async (client) => {
         const runs = (await client.query("SELECT id,checkpoint FROM app.refresh_runs WHERE job_name='availability_sweeps_v1' AND outcome='running'")).rows;
@@ -313,11 +363,11 @@ export function createWatchmodeStore(pool: Pool, guard: (client: PoolClient) => 
     },
     async catalog(context: StoreContext) {
       return transaction(context, async (client) => ({
-        count: (await client.query("SELECT count(*)::int AS n FROM app.movies")).rows[0].n,
-        movies: (await client.query(`SELECT e.external_id,m.metadata_refreshed_at
+        count: (await client.query("SELECT count(*)::int AS n FROM app.movies WHERE metadata_state='active'")).rows[0].n,
+        movies: (await client.query(`SELECT e.external_id,m.metadata_refreshed_at,m.metadata_state
           FROM app.movie_external_ids e JOIN app.movies m ON m.id=e.movie_id
           WHERE e.source='tmdb' ORDER BY m.metadata_refreshed_at,e.external_id`)).rows.map(r => ({
-          tmdbId: String(r.external_id), refreshedAt: r.metadata_refreshed_at.toISOString(),
+          tmdbId: String(r.external_id), refreshedAt: r.metadata_refreshed_at.toISOString(), retired:r.metadata_state==='retired',
         })),
       }));
     },

@@ -29,7 +29,7 @@ export const columns = [
 // Identifiers are code constants, never caller-controlled. All values are parameters.
 export const insertMovie = `INSERT INTO app.movies (${columns.join(",")}) VALUES (${columns.map((_, i) => `$${i + 1}`).join(",")}) RETURNING id`;
 
-export const updateMovie = `UPDATE app.movies SET ${columns.map((c, i) => `${c}=$${i + 1}`).join(",")},updated_at=now() WHERE id=$24`;
+export const updateMovie = `UPDATE app.movies SET ${columns.map((c, i) => `${c}=$${i + 1}`).join(",")},metadata_state='active',updated_at=now() WHERE id=$24`;
 
 // Accept only code-owned columns; timestamps match canonical metadata values.
 export function columnExpression(column: typeof columns[number]): string {

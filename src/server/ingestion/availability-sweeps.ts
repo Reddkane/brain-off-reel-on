@@ -8,6 +8,9 @@ import type { WatchmodeContext, WatchmodeProvider, WatchmodeQuota } from "../pro
 import { tmdbId } from "../providers/tmdb-validation.ts";
 import { acquireRefreshLock } from "../db/refresh-lock.ts";
 import { createWatchmodeStore } from "../db/watchmode-store.ts";
+import { createEvidenceStore } from "../db/availability-evidence-store.ts";
+import { runEvidence, type EvidenceReport } from "./availability-evidence.ts";
+import { calendarMonths } from "../../domain/availability-evidence.ts";
 import type { SweepState } from "../db/watchmode-store.ts";
 import { createPgStore } from "../db/pg-store.ts";
 import type { StoreContext } from "../db/metadata-store.ts";
@@ -23,12 +26,7 @@ export function observedSpend(before: WatchmodeQuota | null, after: WatchmodeQuo
 }
 /** Clamp calendar-month arithmetic rather than treating a month as thirty days. */
 export function refreshDue(refreshedAt: string, now: number): boolean {
-  const start = new Date(refreshedAt), day = start.getUTCDate();
-  start.setUTCDate(1);
-  start.setUTCMonth(start.getUTCMonth() + 5);
-  const last = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate();
-  start.setUTCDate(Math.min(day, last));
-  return now >= start.getTime();
+  return now >= calendarMonths(Date.parse(refreshedAt),5);
 }
 export interface SweepIO {
   readonly pool: Pool;
@@ -38,8 +36,9 @@ export interface SweepIO {
   readonly now: () => number;
   readonly signal: AbortSignal;
   readonly writeReport: (report: unknown, signal: AbortSignal) => Promise<void>;
+  readonly expirePrivateFiles?: (now: number,signal: AbortSignal)=>Promise<{inspected:number;deleted:number;bounded:boolean}>;
 }
-/** Trusted composition. Production CLI remains closed until evidence retention ships. */
+/** Trusted composition. Production CLI remains closed pending focused review and separate authorization. */
 export async function runSweeps(config: SweepConfig, io: SweepIO) {
   const id = randomUUID(), start = io.now(), deadline = start + config.limits.durationMs, workDeadline = deadline - 30000;
   const wall = new AbortController(), timer = setTimeout(() => wall.abort(), config.limits.durationMs);
@@ -56,6 +55,9 @@ export async function runSweeps(config: SweepConfig, io: SweepIO) {
   let wm: WatchmodeContext = { signal: parentSignal, now: io.now, deadline: workDeadline, creditCap: config.limits.credits, charges: 0, attempts: 0, stopped: false };
   const tmdb: ProviderContext = { signal: parentSignal, now: io.now, budget: { attempts: 0, maxAttempts: config.limits.tmdbAttempts, deadline: workDeadline, stopped: false } };
   const store = createWatchmodeStore(io.pool, io.guard), capability = Object.freeze({});
+  const evidenceStore=createEvidenceStore(store);
+  let evidence: EvidenceReport | null=null, evidenceReadback: unknown=null;
+  let privateCleanup: unknown='not_configured';
   const metadataStore = createPgStore({ pool: io.pool, checkoutGuard: io.guard, catalogCapability: capability, operators: [] });
   let cursor = { nextPageService: 0, nextEnrichmentService: 0 };
   async function database<T>(work: (context: StoreContext) => Promise<T>, final = false): Promise<T> {
@@ -95,14 +97,15 @@ export async function runSweeps(config: SweepConfig, io: SweepIO) {
     coverage, releaseUnknown, originUnknown,
     quotaBefore: before, quotaAfter: after, observedSpend: observedSpend(before, after), databaseMs: Math.ceil(databaseMs), elapsedMs: io.now() - start,
     checkpoint: { ...cursor, sweeps: checkpoints.map(s => ({ id: s.id, source: s.source, nextPage: s.nextPage, complete: complete.has(s.id) })) },
-    availability: "candidates_only", adTierCertainty: "unverified", arrivalFreshness: "not_derived"
+    availability: evidence ? "cached_evidence" : "candidates_only", adTierCertainty: "unverified", arrivalFreshness: evidence ? "interval_or_unknown" : "not_derived",
+    evidence,evidenceReadback,privateCleanup
   });
   async function enrichPromoted(signal: AbortSignal) {
     const promoted = await database(ctx => store.promoted(config.generation, new Date(io.now()).toISOString(), ctx));
     const catalog = await database(ctx => store.catalog(ctx)), known = new Set(catalog.movies.map(m => m.tmdbId));
     const cooling = new Set(await database(ctx => store.cooling(new Date(io.now()).toISOString(), ctx)));
     const due = catalog.movies.filter(m => config.refreshIds.includes(m.tmdbId) ||
-      (!cooling.has(m.tmdbId) && refreshDue(m.refreshedAt, io.now()))).map(m => m.tmdbId);
+      (!cooling.has(m.tmdbId) && (m.retired || refreshDue(m.refreshedAt, io.now())))).map(m => m.tmdbId);
     const blocked = new Set(promoted.conflicts);
     for (let i = 0; i < coverage.length; i++) {
       const members = promoted.sweeps.find(s => s.source === coverage[i].source)?.candidates ?? [];
@@ -173,6 +176,7 @@ export async function runSweeps(config: SweepConfig, io: SweepIO) {
             known.add(externalId);
             freeSlots--;
           }
+          else if (catalog.movies.some(m=>m.tmdbId===externalId && m.retired)) freeSlots--;
           for (const service of services)
             persistedByService[service]++;
         }
@@ -189,6 +193,8 @@ export async function runSweeps(config: SweepConfig, io: SweepIO) {
       if (tmdb.budget.stopped)
         throw new SweepError("provider_auth");
       await database(ctx => store.advance(externalId, references, status, new Date(io.now()).toISOString(), ctx));
+      if (config.evidence?.enabled && (status==='failed' || status==='not_found'))
+        await database(ctx=>evidenceStore.retire(externalId,new Date(io.now()).toISOString(),status==='not_found',ctx));
       for (let i = 0; i < queues.length; i++)
         queues[i] = queues[i].filter(c => c.tmdbId !== externalId);
       if (selectedService !== undefined) {
@@ -206,6 +212,7 @@ export async function runSweeps(config: SweepConfig, io: SweepIO) {
   try {
     if (!config.terms.accepted)
       throw new SweepError("terms_required");
+    if (config.evidence?.enabled && !io.expirePrivateFiles) throw new SweepError('request_invalid');
     const lockStarted = performance.now();
     try {
       lock = await acquireRefreshLock(io.pool, io.guard, parentSignal);
@@ -315,13 +322,25 @@ export async function runSweeps(config: SweepConfig, io: SweepIO) {
     }
     if (outcome !== "failed" && io.now() < workDeadline) {
       await enrichPromoted(lock.signal);
+      if (config.evidence?.enabled) {
+        if (io.expirePrivateFiles) privateCleanup=await io.expirePrivateFiles(io.now(),lock.signal);
+        evidence=await runEvidence(config,{store:evidenceStore,database,watchmode:io.watchmode,context:wm,now:io.now});
+        if (evidence.sourceFailures) { outcome='partial'; if (code==='complete') code='service_partial'; }
+        if (evidence.code!=='complete') {outcome='partial';if(code==='complete')code=evidence.code;}
+        evidenceReadback=await database(ctx=>evidenceStore.readback(new Date(io.now()).toISOString(),ctx),true);
+      }
     }
     await database(async () => { }, true);
+    const finalStatusContext={...wm,deadline};
     try {
-      after = await io.watchmode.status({ ...wm, deadline });
+      after = await io.watchmode.status(finalStatusContext);
     }
     catch {
       after = null;
+    }
+    finally {
+      wm.attempts=finalStatusContext.attempts;
+      wm.stopped=finalStatusContext.stopped;
     }
     await database(ctx => store.verifyMetadata(expectedMetadata, ctx), true);
     await checkpoint(new Date(io.now()).toISOString());

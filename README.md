@@ -11,13 +11,15 @@ Catalog fixes (#5) and CI image-pull/Docker-timeout corrections (#6) are merged.
 The app is a static Next.js placeholder; movie picking is not implemented.
 Watchmode free scans and the accepted ad-tier uncertainty policy
 are recorded in [the follow-up evidence](docs/plans/watchmode-verification.md).
-The [Availability: sweeps](docs/plans/availability-sweeps.md) and
-[Availability: evidence](docs/plans/availability-evidence.md) plans define the local
-follow-up. Availability: sweeps is implemented locally: Watchmode decoding,
+Availability: sweeps is merged as #7 at `04bf010`: Watchmode decoding,
 transactional sweep checkpoints/promotions, balanced TMDB enrichment and the shared
-refresh lock. Availability: evidence remains pending; offers and arrivals are not
-derived yet. The sweeps CLI refuses all retained live runs until evidence cleanup
-is implemented and accepted.
+refresh lock. CI passed on the first run for `check`, `database` and
+`metadata-database`, with no rerun. The [Availability: sweeps plan](docs/plans/availability-sweeps.md)
+retains implementation evidence; the approved [Availability: evidence plan](docs/plans/availability-evidence.md)
+is next and includes the readiness map against that merged baseline.
+Availability: evidence passed focused implementation review and re-review. Offers, uncertainty, arrival intervals, links, retention and retirement
+have synthetic/disposable acceptance coverage. The sweeps CLI still refuses all
+retained live runs. See the [implementation review packet](docs/plans/availability-evidence-implementation.md).
 No hosted infrastructure or deployment has been created.
 
 See [the architecture plan](docs/architecture.md) for the product scope, data model, recommendation approach, evaluation protocol, work-area roadmap, and recommended coding models.
@@ -63,8 +65,10 @@ missing-favicon 404. It is not a PWA asset set or a generator-added starter asse
 | `npm run metadata:local -- --scenario repeat` | Synthetic metadata/ratings composition twice, inspected teardown; scenarios `metadata`, `ratings`, `repeat` only. |
 | `npm run metadata:dry-run -- --config <file> --as-of YYYY-MM-DD` | Validate explicit discovery config and print bounded batches without network/writes. |
 | `npm run ratings:dry-run -- --input <file> --as-of YYYY-MM-DD` | Validate/coalesce a TMDB seed; print counts only. Identity/state resolution needs disposable composition. |
-| `npm run availability:sweeps -- --config config/availability-sweeps.example.json` | Offline config validation; no credential reads, provider calls or database writes. `--live` refuses while evidence retention is pending. |
+| `npm run availability:sweeps -- --config config/availability-sweeps.example.json` | Offline config validation; no credential reads, provider calls or database writes. The retained live gate remains closed pending the follow-up in section 9 of the evidence plan and separate authorization. |
 | `npm run test:availability:sweeps:db` | Synthetic Watchmode/TMDB composition, transactional promotion/resume, real advisory overlap/loss, cache sealing and readback against inspected disposable PostgreSQL only. |
+| `npm run availability:sweeps -- --config config/availability-evidence.example.json` | Offline validation of bounded evidence settings; the retained live gate stays closed. |
+| `npm run test:availability:evidence:db` | Fresh replay and explicit sweeps-baseline upgrade; own-age guards, acquisition protection, cached offers/links, arrival clocks and UUID restoration on disposable PostgreSQL. |
 
 CI (`.github/workflows/ci.yml`) runs `npm ci` and `npm run check` on Node 24 for
 pushes to `main` and for pull requests, with read-only permissions and no secrets.
@@ -72,7 +76,7 @@ Its separate database job runs `docker version` and the same `npm run test:db`,
 without npm installation, secrets, published ports or persistent database storage.
 The additional `metadata-database` job installs the lockfile and runs the same metadata work
 DB, synthetic repeat and dry-run commands as local validation. It uses no credentials
-or provider calls. Remote CI evidence is pending separately authorized publication.
+or provider calls. All three jobs passed on the first run at `04bf010`, without a rerun.
 The same job also runs `test:availability:sweeps:db`; provider responses are invented.
 
 ## Disposable database checks
@@ -95,11 +99,16 @@ in the same database. After an unhandled process kill, inspect the recorded ID
 and matching run labels/network/tmpfs before emergency removal as documented
 in the plan. Never remove containers by a guessed name or broad filter.
 
-`supabase/migrations` owns the released three schema migrations and the additive
-availability-sweeps migration. Existing catalog setup/schema replay stays on the
-released three; the sweeps suite applies the additive migration only to its
-disposable target. No retained migration application has been performed. They
-require PostgreSQL 17 and the platform roles, `auth.users(id)`, `auth.uid()` and
+`supabase/migrations` owns four released migrations and the local additive evidence
+migration. The shared metadata disposable harness discovers every SQL migration
+and applies each once in filename order. Upgrade tests alone use its explicit
+sweeps cutoff, seed legacy rows, then apply the remaining migration. The separate
+original schema runner retains its released baseline; isolated catalog acceptance
+upgrades its original setup through the shared filename discovery. No retained
+availability migration has been applied. Retirement-aware importer/readback code
+requires the evidence schema and refuses the older retained schema before ingestion.
+The migrations require PostgreSQL 17 and the platform roles,
+`auth.users(id)`, `auth.uid()` and
 explicit owner USAGE/REFERENCES privileges; they do not provision Auth. Tests
 use a disposable shim in `tests/db/bootstrap.sql`, a non-superuser BYPASSRLS
 migration owner, and invented fixtures in `tests/fixtures/pr-02-synthetic.sql`.
@@ -108,15 +117,22 @@ GUCs simulate a trusted gateway and do not prove identity verification, Supabase
 platform compatibility or endpoint authorization. Service credentials bypass RLS
 and require application authorization in API, sessions and Auth work.
 
-Classification/history/evidence records are append-only. Snapshot children must
+Classification/history records remain append-only. Provider cache evidence denies
+every UPDATE and permits DELETE strictly after each row's own retention age at
+every cascade depth. Mixed-age cascades roll back atomically. The migration stamps
+and backfills offer/observation ages independently of a later deleted parent.
+External-ID acquisitions have a restrictive canonical-mapping FK, unconditional
+UPDATE denial, permanent first-party protection and their own source-age DELETE
+rules. Snapshot children must
 be inserted with their server-stamped xid8 parent in the same transaction, offers
 before observations. API, sessions and Auth work's logical-restore rehearsal must demonstrate that layout.
 Plain account/profile cascades remove selected personal graphs without deferring
 constraints. Direct immutable deletion is denied to the owner and service role.
 Session deletion is likewise denied directly and permitted through profile/account
 cascades. Movies with classification or snapshot history cannot be hard-deleted;
-history-free movies may still cascade their external mappings, credits and
-availability tracks without observations. Other nested FK cascades are permitted under the documented trigger-depth assumption.
+history-free movies can remove external mappings only after their acquisitions
+permit deletion. Provider cache cascades require every descendant to have expired.
+Other nested FK cascades retain the documented trigger-depth assumption.
 The two released read-free immutable validators have authenticated/service EXECUTE
 grants for real named CHECKs; released invoker trigger routines and the new sweeps
 insertion guard have no API EXECUTE grants.
@@ -219,14 +235,17 @@ report conflicts by row indices, preserve exclusions and apply all or none.
 Identical reimport leaves personal timestamps unchanged. Already committed catalog
 resolutions survive a personal conflict. Offline output never logs personal values.
 
-The credential-free real-catalog composition is documented below. Availability evidence, Auth, classification,
+The credential-free real-catalog composition is documented below. Auth, classification,
 recommendations, APIs, settings, PWA and deployment remain outside this implementation.
 The architecture and current plan own acceptance criteria and limitations.
 
 Availability sweeps reuse those provider/store boundaries. The explicit CLI remains
-offline while evidence retention is pending; its internal worker accepts trusted
+offline pending the evidence plan's section 9 follow-up and separate retained authorization; its internal worker accepts trusted
 injected transports and a guarded, caller-owned pool for disposable validation.
-Membership, page, terminal-event and enrichment-check rows are append-only. Page
+Membership, page, terminal-event and enrichment-check rows deny UPDATE and allow
+only expired DELETE. Optional evidence settings add bounded background source checks,
+cached links, arrival derivation and private-file cleanup within the same lock,
+request lane and budgets. Page
 membership is transaction-sealed; completed sets cannot gain late pages. Enrichment
 does not renew a membership ID's acquisition timestamp. A failed sweep preserves
 the previous complete set; crash recovery seals interrupted open sets. The shared

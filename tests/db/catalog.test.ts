@@ -15,6 +15,7 @@ import { localCatalogGuard, readCatalog } from "../../src/server/db/local-catalo
 import { acquireRefreshLock } from "../../src/server/db/refresh-lock.ts";
 import { createPgStore } from "../../src/server/db/pg-store.ts";
 import { fixtures } from "../../tooling/metadata-fixtures.ts";
+import { upgradeCatalogFixture } from "../../tooling/metadata-disposable.ts";
 async function unusedPort() {
   const server = createServer();
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -76,6 +77,8 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
       }
     });
     await setupSchema(admin, runtimePassword);
+    const upgradeClient=await admin.connect();
+    try { await upgradeCatalogFixture(upgradeClient); } finally { upgradeClient.release(); }
     const runtime = pool();
     await completedSetup(runtime);
     await t.test("loopback binding/named mount, collision refusal and repeat inspection", async () => {

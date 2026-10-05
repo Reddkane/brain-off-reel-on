@@ -1,10 +1,13 @@
 # Availability: sweeps
 
 Date: October 4, 2026.
-Status: approved plan and focused implementation review corrections implemented
-and validated locally. Re-review of the corrected change set remains pending.
-Baseline: `main` at `093f0c2`. Local catalog #4, catalog fixes #5 and CI image-pull/
-Docker-timeout handling #6 are merged. Local runtime evidence is recorded below.
+Status: fully merged as #7 at `04bf010` on October 5, 2026.
+All three CI jobs (`check`, `database`, `metadata-database`) passed
+on the first try, without a rerun.
+Original implementation baseline: `main` at `093f0c2`, through #6.
+Historical local validation/review records below retain their original wording;
+their pending-publication/merge status is superseded by this merged status.
+The retained live gate remains closed pending Availability: evidence acceptance.
 
 Specifications: [architecture](../architecture.md), [engineering](../engineering.md),
 [metadata plan](pr-03-metadata.md), [local catalog](real-catalog.md),

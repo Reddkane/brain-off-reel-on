@@ -2,6 +2,7 @@ import { array, exactKeys, integer, object, text, tmdbId } from "../providers/tm
 import { SweepError } from "../providers/watchmode.ts";
 export const sweepMaxima = { durationMs: 600000, credits: 100, pages: 60, details: 100, tmdbAttempts: 300, databaseMs: 120000, catalog: 1000 };
 export interface SweepConfig {
+  readonly evidence?: { readonly enabled: boolean; readonly movies: number; readonly sourceChecks: number; readonly flaggedWatchmodeIds: readonly number[] };
   readonly version: "availability-sweeps-v1";
   readonly generation: string;
   readonly limits: typeof sweepMaxima;
@@ -16,7 +17,7 @@ export interface SweepConfig {
 export function decodeSweepConfig(input: unknown): SweepConfig {
   try {
     const value = object(input);
-    exactKeys(value, ["version", "generation", "region", "adTierPolicy", "limits", "refreshIds", "terms"]);
+    exactKeys(value, ["version", "generation", "region", "adTierPolicy", "limits", "refreshIds", "terms", "evidence"]);
     if (value.version !== "availability-sweeps-v1" || value.region !== "US" || value.adTierPolicy !== "allow_unverified_with_label_and_correction")
       throw new Error();
     const generation = text(value.generation, 64);
@@ -38,7 +39,14 @@ export function decodeSweepConfig(input: unknown): SweepConfig {
     const refreshIds = array(value.refreshIds, 100).map(v => tmdbId(text(v, 10)));
     if (new Set(refreshIds).size !== refreshIds.length)
       throw new Error();
-    return { version: "availability-sweeps-v1", generation, limits, refreshIds, terms: { accepted: terms.accepted, checkedAt: terms.checkedAt, source, decision } };
+    let evidence: SweepConfig['evidence'];
+    if (value.evidence!==undefined) {
+      const e=object(value.evidence);
+      exactKeys(e,['enabled','movies','sourceChecks','flaggedWatchmodeIds']);
+      if (typeof e.enabled!=='boolean') throw new Error();
+      evidence={enabled:e.enabled,movies:integer(e.movies,1,100),sourceChecks:integer(e.sourceChecks,0,20),flaggedWatchmodeIds:array(e.flaggedWatchmodeIds,20).map(v=>integer(v,1))};
+    }
+    return { version: "availability-sweeps-v1", generation, limits, refreshIds, terms: { accepted: terms.accepted, checkedAt: terms.checkedAt, source, decision }, ...(evidence?{evidence}:{}) };
   }
   catch {
     throw new SweepError("config_invalid");

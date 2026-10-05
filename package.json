@@ -9,6 +9,7 @@
   "scripts": {
     "availability:sweeps": "node scripts/availability-sweeps.ts",
     "test:availability:sweeps:db": "node --test tests/db/availability-sweeps.test.ts tests/db/availability-corrections.test.ts",
+    "test:availability:evidence:db": "node --test tests/db/availability-evidence.test.ts",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

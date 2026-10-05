@@ -19,6 +19,7 @@ export async function sweepCommand(args: readonly string[], io: SweepCLIIO): Pro
     }
     io.output(JSON.stringify({
       mode: "offline_dry_run", generation: config.generation, sources: [203, 387, 372, 157], sortBy: "title_asc", limits: config.limits,
+      evidence: config.evidence ?? null,
       adTierPolicy: "allow_unverified_with_label_and_correction", availability: "candidates_only", liveGate: "evidence_retention_required"
     }));
     return 0;

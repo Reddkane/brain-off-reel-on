@@ -394,7 +394,7 @@ export async function catalogCommand(args: readonly string[], io: CatalogIO): Pr
         m.source === s.source &&
         m.external_id === s.externalId)) ||
       !isDeepStrictEqual(before.excluded, after.excluded) ||
-      after.movies.length > supplied.limits.catalog)
+      after.movies.filter(m => m.metadata_state === 'active').length > supplied.limits.catalog)
       throw new Error("readback_mismatch");
     const report = {
       ...pendingReport,

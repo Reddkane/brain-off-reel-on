@@ -14,7 +14,6 @@ import { createWatchmodeStore } from "../../src/server/db/watchmode-store.ts";
 
 test("review regressions: isolated service failures, transient enrichment and concurrent personal writes", { timeout: 240000 }, async t => {
   await withDisposable(async db => {
-    await db.admin.query(await readFile("supabase/migrations/20261005000001_availability_sweeps.sql", "utf8"));
     const f = await fixtures(), raw = JSON.parse(await readFile("config/availability-sweeps.example.json", "utf8"));
     let now = Date.parse("2026-10-05T00:00:00.000Z"), serial = 0;
     function config() { return decodeSweepConfig({ ...raw, generation: `correction-${++serial}`, terms: { ...raw.terms, accepted: true } }); }

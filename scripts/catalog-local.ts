@@ -252,7 +252,8 @@ export async function completedSetup(pool: pg.Pool) {
     // Inspect all released application relations and named immutable validators.
     const result = await client.query("SELECT tablename FROM pg_tables WHERE schemaname='app' ORDER BY tablename");
     const expected = ["availability_observations", "availability_snapshots", "availability_tracks", "feedback_events", "movie_availability", "movie_classifications", "movie_credits", "movie_external_ids", "movies", "profile_movies", "profile_subscriptions", "profiles", "recommendations", "refresh_runs", "selection_sessions", "streaming_provider_external_ids", "streaming_providers"];
-    if (result.rows.map(r => r.tablename).join(",") !== expected.join(","))
+    const evidenceExpected=[...expected,'watchmode_sweeps','watchmode_pages','watchmode_memberships','watchmode_sweep_events','watchmode_enrichment_checks','metadata_detail_attempts','provider_retention_policy','movie_external_id_acquisitions','watchmode_offer_variants','watchmode_links','watchmode_arrivals'].sort();
+    if (![expected.join(','),evidenceExpected.join(',')].includes(result.rows.map(r => r.tablename).join(",")))
       throw new Error("setup_incomplete");
     await client.query("SELECT app.text_array_nonblank(ARRAY[]::text[]),app.profile_content_policy_valid('{}'::jsonb)");
     await client.query("COMMIT");
