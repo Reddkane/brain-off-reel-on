@@ -6,11 +6,23 @@ A movie picker for low-effort viewing, with recommendations informed by taste, s
 
 ## Status
 
-PR 1 foundation, PR 2 schema and PR 3 metadata implementation: a static Next.js placeholder, pure boundaries, branded identities, PostgreSQL storage, bounded metadata ingestion and fill-absent ratings with synthetic validation. Movie picking is not implemented. No hosted infrastructure or deployment has been created.
+Foundation, schema, metadata and local real-catalog composition (#4) are implemented.
+Catalog fixes (#5) and CI image-pull/Docker-timeout corrections (#6) are merged.
+The app is a static Next.js placeholder; movie picking is not implemented.
+Watchmode free scans and the accepted ad-tier uncertainty policy
+are recorded in [the follow-up evidence](docs/plans/watchmode-verification.md).
+The [Availability: sweeps](docs/plans/availability-sweeps.md) and
+[Availability: evidence](docs/plans/availability-evidence.md) plans define the local
+follow-up. Availability: sweeps is implemented locally: Watchmode decoding,
+transactional sweep checkpoints/promotions, balanced TMDB enrichment and the shared
+refresh lock. Availability: evidence remains pending; offers and arrivals are not
+derived yet. The sweeps CLI refuses all retained live runs until evidence cleanup
+is implemented and accepted.
+No hosted infrastructure or deployment has been created.
 
-See [the architecture plan](docs/architecture.md) for the product scope, data model, recommendation approach, evaluation protocol, PR roadmap, and recommended coding models.
+See [the architecture plan](docs/architecture.md) for the product scope, data model, recommendation approach, evaluation protocol, work-area roadmap, and recommended coding models.
 
-Before implementation, read [AGENTS.md](AGENTS.md), the [engineering standards and release gates](docs/engineering.md), the [PR 2 schema evidence](docs/plans/pr-02-schema.md), and the [PR 3 plan and evidence](docs/plans/pr-03-metadata.md).
+Before implementation, read [AGENTS.md](AGENTS.md), the [engineering standards and release gates](docs/engineering.md), the [schema evidence](docs/plans/pr-02-schema.md), and the [metadata plan and evidence](docs/plans/pr-03-metadata.md).
 
 ## Local setup
 
@@ -32,7 +44,7 @@ Open http://127.0.0.1:3000/ and stop the server with Ctrl+C.
 No environment files, credentials, external APIs, real catalog, or database are needed for the app or foundation checks.
 Local `.env*` files, generated Next types, and build/dependency/cache output are ignored.
 Next's `agentRules: false` preserves the repository-owned `AGENTS.md`; this is the only
-Next configuration needed for PR 1.
+Next configuration needed for foundation work.
 The small local `src/app/favicon.ico` was added to resolve the browser smoke check's
 missing-favicon 404. It is not a PWA asset set or a generator-added starter asset.
 
@@ -46,19 +58,22 @@ missing-favicon 404. It is not a PWA asset set or a generator-added starter asse
 | `npm run check` | Typecheck, lint, test, and build in order; stop on failure. |
 | `npm run test:db:runner` | Docker-independent Node lifecycle/refusal tests; no npm dependencies needed. |
 | `npm run test:db` | Runner tests, disposable PostgreSQL schema/access suites, expected-red controls, final green and fresh reset replay. |
-| `npm run test:metadata:db` | Dedicated PR 3 pg integration suites, two fresh disposable container/network cycles. Requires Docker; missing harness context fails. |
+| `npm run test:metadata:db` | Dedicated metadata work pg integration suites, two fresh disposable container/network cycles. Requires Docker; missing harness context fails. |
 | `npm run test:metadata:controls` | Seven temporary source mutation controls, restored in finally, followed by final offline and DB green. Run alone; private logs in `.cache/pr03/`. |
 | `npm run metadata:local -- --scenario repeat` | Synthetic metadata/ratings composition twice, inspected teardown; scenarios `metadata`, `ratings`, `repeat` only. |
 | `npm run metadata:dry-run -- --config <file> --as-of YYYY-MM-DD` | Validate explicit discovery config and print bounded batches without network/writes. |
 | `npm run ratings:dry-run -- --input <file> --as-of YYYY-MM-DD` | Validate/coalesce a TMDB seed; print counts only. Identity/state resolution needs disposable composition. |
+| `npm run availability:sweeps -- --config config/availability-sweeps.example.json` | Offline config validation; no credential reads, provider calls or database writes. `--live` refuses while evidence retention is pending. |
+| `npm run test:availability:sweeps:db` | Synthetic Watchmode/TMDB composition, transactional promotion/resume, real advisory overlap/loss, cache sealing and readback against inspected disposable PostgreSQL only. |
 
 CI (`.github/workflows/ci.yml`) runs `npm ci` and `npm run check` on Node 24 for
 pushes to `main` and for pull requests, with read-only permissions and no secrets.
 Its separate database job runs `docker version` and the same `npm run test:db`,
 without npm installation, secrets, published ports or persistent database storage.
-The additional `metadata-database` job installs the lockfile and runs the same PR 3
+The additional `metadata-database` job installs the lockfile and runs the same metadata work
 DB, synthetic repeat and dry-run commands as local validation. It uses no credentials
 or provider calls. Remote CI evidence is pending separately authorized publication.
+The same job also runs `test:availability:sweeps:db`; provider responses are invented.
 
 ## Disposable database checks
 
@@ -80,7 +95,10 @@ in the same database. After an unhandled process kill, inspect the recorded ID
 and matching run labels/network/tmpfs before emergency removal as documented
 in the plan. Never remove containers by a guessed name or broad filter.
 
-`supabase/migrations` owns the three ordered, transactional migrations. They
+`supabase/migrations` owns the released three schema migrations and the additive
+availability-sweeps migration. Existing catalog setup/schema replay stays on the
+released three; the sweeps suite applies the additive migration only to its
+disposable target. No retained migration application has been performed. They
 require PostgreSQL 17 and the platform roles, `auth.users(id)`, `auth.uid()` and
 explicit owner USAGE/REFERENCES privileges; they do not provision Auth. Tests
 use a disposable shim in `tests/db/bootstrap.sql`, a non-superuser BYPASSRLS
@@ -88,32 +106,33 @@ migration owner, and invented fixtures in `tests/fixtures/pr-02-synthetic.sql`.
 Ordinary-role assertions prove actual constraints/grants/RLS; SET ROLE and claim
 GUCs simulate a trusted gateway and do not prove identity verification, Supabase
 platform compatibility or endpoint authorization. Service credentials bypass RLS
-and require application authorization in PR 7.
+and require application authorization in API, sessions and Auth work.
 
 Classification/history/evidence records are append-only. Snapshot children must
 be inserted with their server-stamped xid8 parent in the same transaction, offers
-before observations. PR 7's logical-restore rehearsal must demonstrate that layout.
+before observations. API, sessions and Auth work's logical-restore rehearsal must demonstrate that layout.
 Plain account/profile cascades remove selected personal graphs without deferring
 constraints. Direct immutable deletion is denied to the owner and service role.
 Session deletion is likewise denied directly and permitted through profile/account
 cascades. Movies with classification or snapshot history cannot be hard-deleted;
 history-free movies may still cascade their external mappings, credits and
 availability tracks without observations. Other nested FK cascades are permitted under the documented trigger-depth assumption.
-The two read-free immutable validators have authenticated/service EXECUTE grants
-for real named CHECKs; the four invoker trigger routines have no API EXECUTE grants.
+The two released read-free immutable validators have authenticated/service EXECUTE
+grants for real named CHECKs; released invoker trigger routines and the new sweeps
+insertion guard have no API EXECUTE grants.
 Every future migration must explicitly revoke PUBLIC/API access on new functions
 in their creation transaction: PostgreSQL defaults grant PUBLIC EXECUTE, and a
 schema-scoped default revoke cannot remove it. Platform-wide defaults remain
 unchanged. No SECURITY DEFINER function or API schema exposure is configured.
 
-PR 7 must decide Data API exposure and explicitly accept or revoke the existing
+API, sessions and Auth work must decide Data API exposure and explicitly accept or revoke the existing
 personal browser-write grants if exposed. HTTP validation/rate limits/CSRF controls
 would not protect direct PostgREST writes. Actual personal preferences remain
 unconfirmed; fixture values carry no product meaning.
 
 Direct versions are pinned in `package.json`, with transitive resolution in
 `package-lock.json`. Runtime dependencies are Next, React, React DOM and pg.
-PR 3 adds only pg **8.23.1** and development @types/pg **8.23.1**. Parameterized,
+Metadata ingestion adds only pg **8.23.1** and development @types/pg **8.23.1**. Parameterized,
 unnamed queries and transactions use one checked-out client; production imports
 never start work or read credentials.
 TypeScript 6.0.3 stays within the parser's supported range (<6.1); ESLint 9.39.5
@@ -127,14 +146,14 @@ Do not override incompatible peers. No additional SDK, ORM, UI framework, or val
 | --- | --- |
 | `src/app` | Framework entry points, static page, and local CSS. |
 | `src/domain` | Pure identities/invariants; imports only domain through relative paths. |
-| `src/recommendation` | Pure engine boundary; imports only recommendation/domain through relative paths. PR 1 exports a type only. |
+| `src/recommendation` | Pure engine boundary; imports only recommendation/domain through relative paths. Foundation work exports a type only. |
 | `tests` | Synthetic identity fixtures, compile-only type controls, and real-config boundary tests. Never imported by production source. |
 | `tooling/eslint` | Lexical area containment; no filesystem resolution. Existing lint rules own packages/syntax/assertions. |
 | `supabase/migrations` | PostgreSQL schema, constraints, privileges, policies and invariant triggers. |
 | `tests/db`, `tests/fixtures/pr-02-synthetic.sql` | Disposable platform shim, assertions, synthetic inserts and rollback-only controls. |
 | `tooling/db-test.mjs`, `tooling/db-image.txt` | Disposable Docker lifecycle and official multi-architecture image pin. |
 
-PR 3 ownership: `src/server/providers` owns the metadata boundary/TMDB decoder and
+Metadata ownership: `src/server/providers` owns the metadata boundary/TMDB decoder and
 transport; `src/server/ingestion` owns discovery/configuration/orchestration and
 safe diagnostics; `src/server/db` owns the reusable pg store and fixed SQL.
 `scripts` owns explicit-file offline entry points. `tooling/metadata-*.ts` owns
@@ -170,7 +189,7 @@ all six brand pairs in both directions and raw string/number rejection. The inde
 pure project includes global-leak checks; the app project excludes that globals file.
 These files are not runtime tests.
 
-PR 3 stores validated metadata only after exact namespaced resolution. One appended
+Metadata ingestion stores validated metadata only after exact namespaced resolution. One appended
 TMDB request supplies all four components; missing/malformed components cannot
 erase prior data. Discovery is candidate sourcing, with no verified offers or
 eligibility. Release dates follow `tmdb-release-v1`; a later primary date than the
@@ -179,7 +198,7 @@ mapping `origin-v1` explicitly has no verified rules: all three production probe
 are disabled and results remain unknown. Synthetic affirmative rules do not prove
 real company correspondence or production truth.
 
-The PR 3 disposable runner is separate from PR 2: unique `bor-pr03` labels/names,
+The metadata work disposable runner is separate from schema work: unique `bor-pr03` labels/names,
 private bridge network, tmpfs, random credentials supplied over stdin, and exactly
 one inspected ephemeral `127.0.0.1` port. It reuses unedited bootstrap/migrations;
 the database remains `bor_pr02_test`, marker `bor-pr02-disposable`. The injected
@@ -200,15 +219,25 @@ report conflicts by row indices, preserve exclusions and apply all or none.
 Identical reimport leaves personal timestamps unchanged. Already committed catalog
 resolutions survive a personal conflict. Offline output never logs personal values.
 
-The credential-free real-catalog composition is documented below. Availability, Auth, classification,
+The credential-free real-catalog composition is documented below. Availability evidence, Auth, classification,
 recommendations, APIs, settings, PWA and deployment remain outside this implementation.
 The architecture and current plan own acceptance criteria and limitations.
+
+Availability sweeps reuse those provider/store boundaries. The explicit CLI remains
+offline while evidence retention is pending; its internal worker accepts trusted
+injected transports and a guarded, caller-owned pool for disposable validation.
+Membership, page, terminal-event and enrichment-check rows are append-only. Page
+membership is transaction-sealed; completed sets cannot gain late pages. Enrichment
+does not renew a membership ID's acquisition timestamp. A failed sweep preserves
+the previous complete set; crash recovery seals interrupted open sets. The shared
+session advisory lock also covers the legacy live catalog importer, including
+provider listing, before any provider call.
 
 ## Separate local catalog composition
 
 The [approved plan](docs/plans/real-catalog.md) owns setup, bounds, validation and live
 gates. `npm run test:catalog:db` checks synthetic operator/import paths and A1
-persistence locally and in CI. No retained setup or live import has been performed.
+persistence locally and in CI. This sweeps work performs no retained setup or live import.
 
 After **separate retained setup authorization**, cache the exact image and run:
 

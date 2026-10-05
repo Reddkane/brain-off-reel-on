@@ -12,6 +12,7 @@ import { catalogCommand } from "../../scripts/catalog-import.ts";
 import type { CatalogIO } from "../../scripts/catalog-import.ts";
 import { decodePassword, privateJson, firstImportLimits, subscriptions } from "../../scripts/catalog-config.ts";
 import { localCatalogGuard, readCatalog } from "../../src/server/db/local-catalog-target.ts";
+import { acquireRefreshLock } from "../../src/server/db/refresh-lock.ts";
 import { createPgStore } from "../../src/server/db/pg-store.ts";
 import { fixtures } from "../../tooling/metadata-fixtures.ts";
 async function unusedPort() {
@@ -356,6 +357,17 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
       }
     };
     const args = ["--config", ".cache/real-catalog/private/synthetic.json", "--as-of", "2026-10-03", "--live"];
+    await t.test("legacy importer shares availability lock and refuses overlap before provider calls",async()=>{
+      const held=await acquireRefreshLock(runtime,localCatalogGuard,controller.signal);
+      const beforeCalls=fetchCalls;
+      try {
+        assert.equal(await catalogCommand(args,io),1);
+        assert.equal(output.at(-1),"refresh_overlap");
+        assert.equal(fetchCalls,beforeCalls);
+        assert.equal(await catalogCommand([...args,"--list-providers"],io),1);
+        assert.equal(fetchCalls,beforeCalls);
+      }finally{await held.release();}
+    });
     await t.test("actual CLI composition repeats identity/credits with no personal/availability/classification writes", async () => {
       assert.equal(await catalogCommand(args, io), 0);
       const before = await readCatalog(runtime, Date.now() + 10000);

@@ -1,0 +1,22 @@
+{
+  "version": "availability-sweeps-v1",
+  "generation": "us-direct-v1",
+  "region": "US",
+  "adTierPolicy": "allow_unverified_with_label_and_correction",
+  "refreshIds": [],
+  "limits": {
+    "durationMs": 600000,
+    "credits": 100,
+    "pages": 60,
+    "details": 100,
+    "tmdbAttempts": 300,
+    "databaseMs": 120000,
+    "catalog": 1000
+  },
+  "terms": {
+    "accepted": false,
+    "checkedAt": "2026-10-04",
+    "source": "https://api.watchmode.com/terms/",
+    "decision": "noncommercial_free_use_with_attribution_and_30_day_cache_limit"
+  }
+}
