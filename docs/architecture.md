@@ -1,10 +1,12 @@
 # Low-Brain Movie Picker: Architecture Proposal
 
 Date: October 2, 2026  
-Status: Consolidated architecture with the October 4 availability-plan revisions.
-Implementation baseline is `main` at `093f0c2`; foundation, schema, metadata and local
-catalog work are implemented through #6. Availability: sweeps/evidence remain planning
-drafts. User-approved trial, unseen-only, structured-data, freshness/origin and
+Status: Consolidated architecture with the October 4 availability-plan revisions
+and October 5 merged-baseline reconciliation.
+Implementation baseline is `main` at `04bf010`; foundation, schema, metadata, local
+catalog and Availability: sweeps are merged through #7. Availability: evidence is
+implemented and passed focused review; the retained live gate remains closed
+pending the evidence plan's section 9 follow-up. User-approved trial, unseen-only, structured-data, freshness/origin and
 Disney+/Hulu uncertainty policies are specified below; remaining personal inputs
 still need confirmation before the trial.
 
@@ -359,17 +361,22 @@ the applicable data purge.
 
 Availability: evidence adds a time-bounded invoker guard on availability snapshots,
 offers, observations, tracks and new Watchmode cache/evidence tables. It always
-denies UPDATE; direct DELETE requires an immutable checked/observed timestamp older
-than the configured retention window. Preserve existing FK-cascade DELETE allowances
-and grants/RLS. Use no maintenance-owner role, SECURITY DEFINER retention function
-or role-aware bypass; unrelated immutable guards remain unchanged. This migration
-is planned, not implemented by the current schema.
+denies UPDATE; every DELETE, including FK cascades at any trigger depth, requires
+the row's own immutable checked/observed timestamp older than the configured
+retention window. A mixed-age cascade fails and rolls back; there is no nested
+DELETE age bypass on these tables. Preserve grants/RLS. Use no maintenance-owner
+role, SECURITY DEFINER retention function or role-aware bypass; unrelated immutable
+guards remain unchanged. The additive evidence migration is implemented and
+validated on disposable PostgreSQL; it has not been applied to the retained catalog.
 
 TMDB refresh/retirement uses ordinary movie UPDATEs. Preserve the UUID and first-party
 ratings, feedback and session metrics; retire and clear expired provider fields
 only after the six-calendar-month deadline passes with all scheduled attempts
 failed. A confirmed TMDB 404 is the only early "gone" signal; failed refreshes never
-stamp successful refresh time. Record external-ID acquisition provenance: IDs from
+stamp successful refresh time. Keep canonical external-ID mappings separate from
+acquisition provenance records, allowing independent acquisition paths and times
+for the same mapping. Backfill existing mappings as TMDB acquisitions at their
+movie's metadata fetch time, never as first-party input. IDs from
 first-party ratings input survive TMDB retirement, as do independently fresh
 Watchmode IDs subject to Watchmode's own 30-day cache limit. A later successful
 refresh can restore the same UUID. Recommendation work

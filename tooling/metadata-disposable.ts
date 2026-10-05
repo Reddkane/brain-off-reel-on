@@ -1,9 +1,19 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import pg from "pg";
 import type { PoolClient } from "pg";
 import { array, object } from "../src/server/providers/tmdb-validation.ts";
+
+export async function migrationFiles() {
+  return (await readdir(new URL("../supabase/migrations/", import.meta.url)))
+    .filter(file => file.endsWith(".sql")).sort();
+}
+/** Explicit upgrade path for the separate catalog lifecycle's original schema baseline. */
+export async function upgradeCatalogFixture(client: PoolClient) {
+  for (const file of await migrationFiles()) if (file > "20261002000003_access.sql")
+    await client.query(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
+}
 
 export interface Disposable {
   readonly pool: pg.Pool;
@@ -12,6 +22,7 @@ export interface Disposable {
   readonly signal: AbortSignal;
   readonly containerId: string;
   readonly networkId: string;
+  readonly upgrade: () => Promise<void>;
 }
 
 export interface DockerResult {
@@ -124,6 +135,8 @@ export async function withDisposable<T>(
   options: {
     readonly signal?: AbortSignal;
     readonly docker?: Docker;
+    /** Upgrade tests alone seed the merged sweeps baseline before remaining migrations. */
+    readonly baseline?: "sweeps";
   } = {}
 ): Promise<T> {
   const interrupt = new AbortController();
@@ -259,8 +272,20 @@ export async function withDisposable<T>(
       "postgres"
     );
 
-    for (const file of ["20261002000001_catalog.sql", "20261002000002_personal.sql", "20261002000003_access.sql"])
+    const migrations = await migrationFiles();
+    let applied = 0;
+    async function upgrade() {
+      while (applied < migrations.length) {
+        const file = migrations[applied];
+        await sql(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"), "bor_migrator");
+        applied++;
+      }
+    }
+    for (const file of migrations) {
+      if (options.baseline === "sweeps" && file > "20261005000001_availability_sweeps.sql") break;
       await sql(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"), "bor_migrator");
+      applied++;
+    }
 
     await sql(
       await readFile(new URL("../tests/fixtures/pr-02-synthetic.sql", import.meta.url), "utf8"),
@@ -309,7 +334,8 @@ export async function withDisposable<T>(
       guard: disposableGuard,
       signal,
       containerId: id,
-      networkId
+      networkId,
+      upgrade
     });
   } catch (error) {
     workFailed = true;

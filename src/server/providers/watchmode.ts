@@ -4,6 +4,7 @@ import { transport } from "./tmdb.ts";
 import { array, integer, object, tmdbId } from "./tmdb-validation.ts";
 import { SweepError } from "./sweep-error.ts";
 export { SweepError } from "./sweep-error.ts";
+import { decodeSourceCheck, type SourceCheck } from "./watchmode-sources.ts";
 export const watchmodeSources = [203, 387, 372, 157] as const;
 export interface WatchmodePage {
   readonly page: number;
@@ -82,6 +83,7 @@ export function decodeQuota(input: unknown): WatchmodeQuota {
   return { quota, used };
 }
 export interface WatchmodeProvider {
+  sources?(watchmodeId: number, context: WatchmodeContext): Promise<SourceCheck>;
   status(context: WatchmodeContext): Promise<WatchmodeQuota>;
   page(source: number, page: number, context: WatchmodeContext): Promise<WatchmodePage>;
 }
@@ -190,6 +192,12 @@ export function createWatchmode(key: string, io: Transport = transport): Watchmo
     }
   }
   return {
+    async sources(watchmodeId, context) {
+      integer(watchmodeId,1);
+      const raw=await request(`title/${watchmodeId}/sources/?regions=US`,true,context);
+      try { return decodeSourceCheck(raw,new Date(context.now()).toISOString()); }
+      catch { throw new SweepError("body_invalid"); }
+    },
     async status(context) {
       try {
         return decodeQuota(await request("status/", false, context));

@@ -221,6 +221,9 @@ export function createPgStore(options: PgStoreOptions): MetadataStore {
 
           if (ids.length) {
             id = movieId(ids[0]);
+            const state = (await client.query(
+              "SELECT metadata_state FROM app.movies WHERE id=$1 FOR UPDATE", [id]
+            )).rows[0].metadata_state;
 
             const slots = await client.query<{
               source: string;
@@ -260,6 +263,10 @@ export function createPgStore(options: PgStoreOptions): MetadataStore {
                 m.keys.every(k => slots.rows.some(s => s.source === k.source &&
                   s.external_id === k.externalId));
 
+              if (equal) for (const k of m.keys) await client.query(
+                "INSERT INTO app.movie_external_id_acquisitions VALUES($1,$2,'tmdb_metadata',$3) ON CONFLICT DO NOTHING",
+                [id, k.source, m.checkedAt]
+              );
               return equal ? {
                 status: "unchanged",
                 movieId: id,
@@ -270,6 +277,9 @@ export function createPgStore(options: PgStoreOptions): MetadataStore {
             }
 
             const next = canonicalValues(m);
+            if (state === "retired" && Number((await client.query(
+              "SELECT count(*) FROM app.movies WHERE metadata_state='active'"
+            )).rows[0].count) >= cap) return { status: "catalog_limit" };
 
             if ([1, 5, 6, 7, 10, 11, 19].some(i => old[i] !== null &&
               next[i] === null) ||
@@ -284,7 +294,7 @@ export function createPgStore(options: PgStoreOptions): MetadataStore {
           } else {
             const count = await client.query<{
               count: string;
-            }>("SELECT count(*) FROM app.movies");
+            }>("SELECT count(*) FROM app.movies WHERE metadata_state='active'");
 
             if (Number(count.rows[0].count) >= cap) return {
               status: "catalog_limit"
@@ -314,6 +324,11 @@ export function createPgStore(options: PgStoreOptions): MetadataStore {
               "INSERT INTO app.movie_external_ids(movie_id,source,external_id) VALUES($1,$2,$3)",
               [id, k.source, k.externalId]
             );
+
+          for (const k of m.keys) await client.query(
+            "INSERT INTO app.movie_external_id_acquisitions VALUES($1,$2,'tmdb_metadata',$3) ON CONFLICT DO NOTHING",
+            [id, k.source, m.checkedAt]
+          );
 
           await client.query("DELETE FROM app.movie_credits WHERE movie_id=$1 AND source=$2", [id, "tmdb"]);
 
@@ -446,6 +461,12 @@ export function createPgStore(options: PgStoreOptions): MetadataStore {
             changed: 0,
             indices: conflicts
           };
+
+          // First-party identity survives provider expiry even on an unchanged seed.
+          for (const r of ordered) await client.query(`INSERT INTO app.movie_external_id_acquisitions
+            SELECT $1,$2,'first_party_ratings',COALESCE(
+              (SELECT min(acquired_at) FROM app.movie_external_id_acquisitions WHERE movie_id=$1 AND source=$2 AND acquisition_path='first_party_ratings'),statement_timestamp())
+            ON CONFLICT DO NOTHING`, [r.movieId, r.key.source]);
 
           for (const {
             row,
