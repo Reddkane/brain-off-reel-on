@@ -7,6 +7,7 @@ import type { Pool } from "pg";
 import { boundedText, catalogCode, decodeCatalog, decodePassword, decodeProviderListing, decodeTokenFile, listingFilename, privateDirectory, privatePath, privateJson } from "./catalog-config.ts";
 import { catalogPool } from "./catalog-local.ts";
 import { localCatalogGuard, readCatalog } from "../src/server/db/local-catalog-target.ts";
+import { acquireRefreshLock } from "../src/server/db/refresh-lock.ts";
 import { createPgStore } from "../src/server/db/pg-store.ts";
 import { canonicalValues } from "../src/server/db/metadata-sql.ts";
 import { productionMapping } from "../src/server/ingestion/config.ts";
@@ -168,8 +169,10 @@ export function defaultCatalogIO(signal: AbortSignal): CatalogIO {
 }
 export async function catalogCommand(args: readonly string[], io: CatalogIO): Promise<number> {
   let pool: Pool | undefined;
+  let refreshLock: Awaited<ReturnType<typeof acquireRefreshLock>> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let deadline = 0, reportAttempted = false;
+  let lockDatabaseMs = 0;
   let pendingReport: Record<string, unknown> | undefined;
   const executionId = randomUUID();
   const start = io.now();
@@ -199,7 +202,12 @@ export async function catalogCommand(args: readonly string[], io: CatalogIO): Pr
     deadline = Date.now() + Math.max(0, supplied.limits.durationMs - (io.now() - start));
     const controller = new AbortController();
     timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()));
-    const signal = AbortSignal.any([controller.signal, io.signal]);
+    const parentSignal = AbortSignal.any([controller.signal, io.signal]);
+    pool = io.pool(await io.password());
+    const lockStarted = performance.now();
+    refreshLock = await acquireRefreshLock(pool, localCatalogGuard, parentSignal);
+    lockDatabaseMs = Math.ceil(performance.now() - lockStarted);
+    const signal = refreshLock.signal;
     // PR 3 subtracts its own reserve. Lowered operator durations still reserve 30s.
     const providerDeadline = start + supplied.limits.durationMs - 30000 + Math.min(30000, supplied.limits.durationMs / 10);
     const context: ProviderContext = {
@@ -270,11 +278,10 @@ export async function catalogCommand(args: readonly string[], io: CatalogIO): Pr
       })),
       omitted: scope.omitted.map(s => s.service)
     }));
-    const password = await io.password();
-    pool = io.pool(password);
+    await refreshLock.check();
     const preflightStart = performance.now();
     const before = await readCatalog(pool, Math.min(Date.now() + 10000, deadline - 30000));
-    const preflightDatabaseMs = Math.ceil(performance.now() - preflightStart);
+    const preflightDatabaseMs = lockDatabaseMs + Math.ceil(performance.now() - preflightStart);
     if (preflightDatabaseMs >= supplied.limits.databaseMs)
       throw new Error("database_budget");
     const capability = Object.freeze({});
@@ -440,6 +447,7 @@ export async function catalogCommand(args: readonly string[], io: CatalogIO): Pr
   }
   finally {
     try {
+      await refreshLock?.release();
       if (pool)
         await pool.end();
     }

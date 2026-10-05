@@ -67,3 +67,5 @@ jobs:
       - run: npm run metadata:dry-run -- --config tests/fixtures/pr-03/discovery-synthetic.json --as-of 2026-10-03
       - run: npm run ratings:dry-run -- --input tests/fixtures/pr-03/ratings-synthetic.json --as-of 2026-10-03
       - run: npm run test:catalog:db
+      - run: npm run test:availability:sweeps:db
+      - run: npm run availability:sweeps -- --config config/availability-sweeps.example.json

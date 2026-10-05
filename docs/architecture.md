@@ -1,7 +1,12 @@
 # Low-Brain Movie Picker: Architecture Proposal
 
 Date: October 2, 2026  
-Status: Consolidated planning draft after two Claude reviews. User approved randomized trial, unseen-only V0, and structured-data-first boundary design. User also approved bounded freshness preferences and production-origin variety, specified in the owning sections below. Actual personal preferences in section 12 remain needed. No production implementation has started.
+Status: Consolidated architecture with the October 4 availability-plan revisions.
+Implementation baseline is `main` at `093f0c2`; foundation, schema, metadata and local
+catalog work are implemented through #6. Availability: sweeps/evidence remain planning
+drafts. User-approved trial, unseen-only, structured-data, freshness/origin and
+Disney+/Hulu uncertainty policies are specified below; remaining personal inputs
+still need confirmation before the trial.
 
 ## 1. Purpose and product contract
 
@@ -18,7 +23,7 @@ Primary target: median recommendations before selection at most two among succes
 Use TypeScript, Next.js, Supabase Postgres, and PWA distribution. One application plus ingestion/classification scripts; no microservices.
 
 ```text
-TMDB metadata and availability -> ingest/refresh -> Postgres
+TMDB metadata / Watchmode availability -> ingest/refresh -> Postgres
 Offline classification/review --------------------> Postgres
 Personal ratings/preferences --------------------> Postgres
                                                         |
@@ -45,42 +50,43 @@ Choose **Vercel for Next.js hosting and daily Vercel Cron**, with Supabase for d
 
 Vercel Hobby currently permits daily cron with an invocation window of up to an hour. That fits availability refresh, which does not require exact timing. Use the Node.js runtime with Fluid compute; current Hobby function maximum duration is 300 seconds. Benchmark refresh completion before the trial rather than assuming the whole catalog fits. Sources are linked in section 14.
 
-No purchased domain is required; supplied HTTPS addresses suffice. A local-only prototype may use a fixed profile. Before any public phone trial, provision one Supabase Auth account with email/password, disable public signup, and enforce ownership in server code and database policies. Do not expose a fixed-profile write API. Test persistent login inside the installed iPhone PWA in PR 8. Do not rely on email links opening in the installed app's browser context. Document account recovery separately.
+No purchased domain is required; supplied HTTPS addresses suffice. A local-only prototype may use a fixed profile. Before any public phone trial, provision one Supabase Auth account with email/password, disable public signup, and enforce ownership in server code and database policies. Do not expose a fixed-profile write API. Test persistent login inside the installed iPhone PWA in phone-experience work. Do not rely on email links opening in the installed app's browser context. Document account recovery separately.
 
-Service credentials stay server-only. Where privileged clients bypass RLS, server authorization remains mandatory. Auth and access control land in PR 7, not after the trial.
+Service credentials stay server-only. Where privileged clients bypass RLS, server authorization remains mandatory. Auth and access control must be verified before the phone trial.
 
 ### Security baseline and pre-trial requirements
 
-Treat browser requests, client IDs, provider payloads, and generated classification output as untrusted. Protect personal viewing data and credentials, prevent unauthorized writes, and bound operations that consume database/provider resources. Apply these requirements in the owning PR; this section is not a claim that controls already exist.
+Treat browser requests, client IDs, provider payloads, and generated classification output as untrusted. Protect personal viewing data and credentials, prevent unauthorized writes, and bound operations that consume database/provider resources. Apply these requirements in the owning work area; this section is not a claim that controls already exist.
 
 - **Authentication and authorization:** verify identity using the supported Supabase server integration, not an unverified session object or client-supplied profile ID. Deny access by default. Every profile/session/recommendation/feedback read or mutation verifies ownership, including child resources and diagnostic/export routes. UUIDs are identifiers, not permissions. Browser users cannot write shared catalog/classification data. Use user-scoped clients for ordinary personal operations where practical; privileged job clients require explicit server checks and narrow responsibilities.
 - **Database access:** explicitly configure grants and RLS when tables are created. Anonymous callers have no personal-data access. RLS ownership policies cover reads and writes, including indirect session ownership and restricted account/profile fields. Do not allow users to reassign profile ownership. Privileged credentials can bypass RLS, so test application authorization separately from database policies. Before the personal trial, use two synthetic test identities to verify isolation even though only one real account is enabled.
-- **Input and request protection:** validate schemas, ID formats, allowed fields, numeric bounds, enum values, and request-size limits; use parameterized database operations. Define per-route limits in the PR plan. Cookie-authenticated mutations require validated same-origin requests plus framework-supported CSRF protection or explicit CSRF tokens as appropriate; SameSite cookies and CORS alone are not the complete defense. Ordinary reads are side-effect free. The bearer-authenticated cron GET is a documented scheduler exception, not a browser mutation route.
+- **Input and request protection:** validate schemas, ID formats, allowed fields, numeric bounds, enum values, and request-size limits; use parameterized database operations. Define per-route limits in the implementation plan. Cookie-authenticated mutations require validated same-origin requests plus framework-supported CSRF protection or explicit CSRF tokens as appropriate; SameSite cookies and CORS alone are not the complete defense. Ordinary reads are side-effect free. The bearer-authenticated cron GET is a documented scheduler exception, not a browser mutation route.
 - **Session and abuse controls:** HTTPS in deployment; retain the supported Auth session flow and document cookie/storage choices rather than inventing token handling. Verify logout, expired sessions, and recovery. Rate-limit authentication through the provider and apply server-side account/IP limits to recommendation/feedback routes, using bounded shared state appropriate to serverless deployment rather than a per-process counter. Do not rely solely on disabled signup. Return controlled errors without credentials, raw queries, or stack traces.
 - **Secrets and environments:** ignore local secret files, commit only placeholder examples, and separate development/test/production credentials and databases. Public browser configuration is allowlisted; service keys, provider keys, passwords, and cron secrets never enter client bundles, traces, or logs. Keep privileged modules server-only. Document credential rotation/revocation; use synthetic data outside the personal trial environment. Do not introduce a secret-management service solely for V0.
 - **External data and rendering:** validate provider/LLM results before storing or using them. Render metadata/explanations as text, not untrusted HTML. Validate outbound destinations as HTTPS URLs on allowed provider hosts; never server-fetch a user-supplied URL. Establish and verify a compatible content-security policy, anti-framing policy, and referrer policy before the phone trial.
 - **Logs, private caching, and diagnostics:** redact authorization headers, tokens, passwords, and unnecessary personal payloads. Traces intentionally contain viewing preferences, so protect them as personal data rather than treating them as anonymous logs. Never expose them in public errors or analytics. Personal API responses must not enter shared CDN/service-worker caches; verify cache isolation and sign-out behavior. Keep debugging/refresh administration private.
 - **Dependencies and recovery:** commit a lockfile, review direct dependencies, and run vulnerability checks during implementation/review. Resolve or explicitly adjudicate relevant findings rather than blindly applying breaking upgrades. Before the trial, document and exercise a small database backup/restore procedure and an owner-operated profile-deletion procedure, including trace/feedback removal. Store backups privately and document retention; deletion must address backup expiry. Self-service export/deletion UI remains deferred to the multi-user beta.
 
-PR plans must specify exact mechanisms, thresholds, and evidence for applicable requirements. Security checks are part of acceptance, not deferred to a later polish PR. No extra infrastructure or paid services are implied by this baseline.
+Work-area plans must specify exact mechanisms, thresholds, and evidence for applicable requirements. Security checks are part of acceptance, not deferred to a later polish PR. No extra infrastructure or paid services are implied by this baseline.
 
-| Owning PR | Required security acceptance evidence |
+| Owning work area | Required security acceptance evidence |
 |---|---|
-| 1 | Secret-file ignore rules and placeholder-only configuration; lockfile/dependency review; server/engine import boundaries verified, with no live credentials required |
-| 2 | Explicit grants/RLS migrations deny anonymous personal access; ownership constraints and immutable server-owned fields documented and tested with fixtures |
-| 3 | Provider response validation, repeatable bounded ingest, server-only credentials and safe text/URL handling |
-| 4 | Missing/invalid cron authorization rejected before work; overlap lease, workload limits, safe diagnostics and provider credentials verified |
-| 5–6 | Classification/input bounds and untrusted-output validation; no personal histories sent to classification providers or client-side privileged dependencies |
-| 7 | Two-identity endpoint and RLS isolation tests; guessed foreign IDs and ownership reassignment rejected; CSRF, rate-limit, malformed/oversized payload, expired-login and idempotency checks; recovery/deletion procedure verified |
-| 8 | Deployed HTTPS/private access, signup restriction, actual iPhone login/logout, security headers, private-cache isolation and absence of privileged secrets in browser assets verified before measured sessions |
-| 9–10 | Preserve and rerun affected security checks as settings, PWA caching and recovery change; these PRs do not postpone pre-trial protections |
+| Foundation | Secret-file ignore rules and placeholder-only configuration; lockfile/dependency review; server/engine import boundaries verified, with no live credentials required |
+| Schema | Explicit grants/RLS migrations deny anonymous personal access; ownership constraints and immutable server-owned fields documented and tested with fixtures |
+| Metadata | Provider response validation, repeatable bounded ingest, server-only credentials and safe text/URL handling |
+| Availability: sweeps/evidence | Advisory overlap lock, workload/credit limits, retention, safe diagnostics and provider credentials verified |
+| Hosting | Protected cron handler rejects missing/invalid authorization before privileged work; scheduler/runtime configuration verified |
+| Classification and ranking | Classification/input bounds and untrusted-output validation; no personal histories sent to classification providers or client-side privileged dependencies |
+| API, sessions and Auth | Two-identity endpoint and RLS isolation tests; guessed foreign IDs and ownership reassignment rejected; CSRF, rate-limit, malformed/oversized payload, expired-login and idempotency checks; recovery/deletion procedure verified |
+| Phone experience | Deployed HTTPS/private access, signup restriction, actual iPhone login/logout, security headers, private-cache isolation and absence of privileged secrets in browser assets verified before measured sessions |
+| Settings/PWA/operations | Preserve and rerun affected security checks as settings, PWA caching and recovery change; these PRs do not postpone pre-trial protections |
 | Multi-user beta | Expand authorization/onboarding tests, shared-learning controls, retention and export/deletion behavior before enabling additional real users |
 
-**Pre-trial gate:** PR 8 does not start real measured sessions until applicable PR 1–8 security criteria pass and remaining findings are documented with a concrete resolution. Failed ownership or credential-protection checks block deployment of personal data. Security evidence belongs in each PR's review notes.
+**Pre-trial gate:** Phone-experience work does not start real measured sessions until all applicable preceding work-area and hosting security criteria pass and remaining findings are documented with a concrete resolution. Failed ownership or credential-protection checks block deployment of personal data. Security evidence belongs in each PR's review notes.
 
 ## 3. Proposed data model
 
-Logical schema, not finalized SQL. Schema PR planning settles physical types, indexes, checks, and migrations.
+Logical schema, not finalized SQL. Schema-work planning settles physical types, indexes, checks, and migrations.
 
 Separate accounts from viewing profiles, with one profile initially.
 
@@ -112,11 +118,14 @@ Constraints:
 - Successful empty availability differs from absent/failed checks. Failed refreshes do not erase prior success. Read only the newest successful snapshot for each source/region; check its age.
 - Session outcome is canonical for selection metrics. Write its update and associated event in one transaction.
 - Profile deletion removes personal data; shared movie data remains.
-- Classification revisions are immutable. Traces retain actual profile/input snapshots or immutable references; a revision number or catalog hash alone cannot reproduce a result.
+- Classification revisions are immutable. Traces retain first-party profile/context
+  snapshots and references to provider evidence rather than copies of provider data.
+  A revision number or catalog hash alone cannot reproduce a result. Recommendation
+  work owns expiry-aware references and any legacy-copy redaction before real use.
 
 Genre/keyword arrays are sufficient for V0. Production-company evidence may also use a compact structured field; no company-management subsystem is implied. Keep evidence source, check time, classification version, and unknown/mixed status. Separate catalogs or a generic repository framework are deferred.
 
-Availability history must support movie/provider-variant/region/offer-type observation intervals: successful absent and present checks, last absence, first presence, episode continuity, and whether an arrival is known, observed within an interval, or unknown. Provider-supplied arrival dates retain their source and semantics separately from observation timestamps. PR 2 settles storage/indexes; PR 3 populates metadata and PR 4 implements these observations. Do not encode an initial import or failed check as a newly added event.
+Availability history must support movie/provider-variant/region/offer-type observation intervals: successful absent and present checks, last absence, first presence, episode continuity, and whether an arrival is known, observed within an interval, or unknown. Provider-supplied arrival dates retain their source and semantics separately from observation timestamps. Schema work settles storage/indexes; metadata work populates metadata and Availability: evidence implements these observations. Do not encode an initial import or failed check as a newly added event.
 
 ## 4. Low-brain model and review workload
 
@@ -165,7 +174,7 @@ Distinguish a hard exclusion from an ordinary preference:
 
 Do not require human review of every ordinary emotional-burden classification. After anchor calibration, batch-classified non-borderline candidates can be eligible under the documented uncertainty policy. Flag disagreements, uncertainty, and titles near a cap for review. This is a recommendation heuristic, not a guarantee about every scene.
 
-Before PR 5, estimate workload from the watchable seed: anchor count, flagged fraction, uncertain fraction, expected minutes per review, and remaining eligible coverage. Begin with a review budget of roughly 30 anchors plus up to 20 flagged candidates, then inspect coverage. If a requested strict theme exclusion requires hundreds of reviews, present the actual tradeoff to the user; do not silently weaken it or collapse the pool. A strict personal theme ban remains a pending preference decision.
+Before classification work, estimate workload from the watchable seed: anchor count, flagged fraction, uncertain fraction, expected minutes per review, and remaining eligible coverage. Begin with a review budget of roughly 30 anchors plus up to 20 flagged candidates, then inspect coverage. If a requested strict theme exclusion requires hundreds of reviews, present the actual tradeoff to the user; do not silently weaken it or collapse the pool. A strict personal theme ban remains a pending preference decision.
 
 ## 5. Taste representation
 
@@ -183,7 +192,12 @@ Trace each stage:
 
 1. Sufficient metadata, including fields needed for enabled hard rules.
 2. Successful US availability no older than the provisional 48-hour maximum.
-3. Included-subscription offer matches an enabled exact provider variant.
+3. Included-subscription offer matches an enabled provider variant. User-approved
+   October 4 exception: Disney+/Hulu bundle-with-ads titles may pass on a current
+   Watchmode US subscription listing when title-level ad-tier inclusion is unknown;
+   show `Ad-tier unverified` and retain the availability-failure correction flow.
+   This is accepted uncertainty, not confirmed tier entitlement. It does not extend
+   to unpurchased channels, rental/purchase, Live TV or other uncertain hard gates.
 4. Not watched or permanently excluded. User-approved V0 policy: unseen movies only; comfort rewatches are deferred.
 5. No same-session exposure and no active cooldown (plain skips: initially seven days).
 6. Runtime, certification/genre/content rules pass using section 4 evidence policies; compute subtitle suitability from current profile/audio context.
@@ -208,11 +222,15 @@ Select deterministically using the freshness/variety policy below, with stable i
 
 Prefer some recent releases and movies recently added to enabled subscriptions without excluding strong older films. Release recency and subscription-arrival recency are distinct signals; a newly licensed classic is not a new release. Apply them only after all hard gates. Missing or uncertain dates are neutral, not exclusion grounds, and future dates receive no recency boost.
 
-Use a small, capped, decaying freshness boost within a near-equivalent shortlist formed from the arm's base score. PR 6 must specify the score-gap threshold, boost cap, decay windows, signal combination, and held-out sensitivity evidence before enabling the policy. Bound the combined release/arrival contribution; do not count the same movie multiple times because it appears on several subscribed services. This preserves taste/suitability priority in the personalized arm and quality priority in the baseline. Freshness remains separate from novelty (new to this viewer).
+Use a small, capped, decaying freshness boost within a near-equivalent shortlist formed from the arm's base score. Ranking work must specify the score-gap threshold, boost cap, decay windows, signal combination, and held-out sensitivity evidence before enabling the policy. Bound the combined release/arrival contribution; do not count the same movie multiple times because it appears on several subscribed services. This preserves taste/suitability priority in the personalized arm and quality priority in the baseline. Freshness remains separate from novelty (new to this viewer).
+
+Freshness decay windows must fit entirely within Watchmode's 30-day
+cache limit and the retained supporting evidence. Expired evidence is neutral;
+ranking cannot retain or reconstruct an old provider observation to extend a boost.
 
 Production origin is metadata, not the streaming service carrying the movie. Retain evidence-backed streamer-produced/financed, traditional-studio, independent, mixed, and unknown categories. Commissioning, financing, co-production, and acquisition/distribution are distinct evidence; a platform availability or marketing label alone does not establish production origin. Version the mapping and preserve ambiguity instead of guessing. Origin is neither a quality score nor an eligibility requirement.
 
-Within the same near-equivalent shortlist, use a small, bounded adjustment favoring origin groups underrepresented in recent recommendations relative to the eligible alternatives. Base this on recommendations shown, not just selections; snapshot the relevant history for replay. PR 6 defines the history window, minimum evidence, adjustment cap, category handling, and precedence with freshness. No mandatory 50/50 split or blanket streamer penalty; any base-score tradeoff is bounded by the documented near-equivalence threshold. Unknown/mixed data cannot cause exclusion or receive a fabricated group advantage. If good alternatives do not exist, return the best eligible movie and expose the coverage limitation in diagnostics.
+Within the same near-equivalent shortlist, use a small, bounded adjustment favoring origin groups underrepresented in recent recommendations relative to the eligible alternatives. Base this on recommendations shown, not just selections; snapshot the relevant history for replay. Ranking work defines the history window, minimum evidence, adjustment cap, category handling, and precedence with freshness. No mandatory 50/50 split or blanket streamer penalty; any base-score tradeoff is bounded by the documented near-equivalence threshold. Unknown/mixed data cannot cause exclusion or receive a fabricated group advantage. If good alternatives do not exist, return the best eligible movie and expose the coverage limitation in diagnostics.
 
 Store normalization, shrinkage, quality adjustment, caps, cooldowns, base weights, freshness parameters, and origin-variety parameters in explicit versioned configuration. Generate short explanations only from actual supported features/taste evidence.
 
@@ -249,13 +267,41 @@ After the correction deadline, finalize to `selected_intent` unless invalidated.
 
 Use separate metadata and availability provider interfaces. Adapters resolve source IDs and return validated domain records. Ranking code never consumes TMDB response shapes.
 
-TMDB is the initial source. Watchmode remains a future adapter; its handoff price is unverified. Do not add provider-specific package or playback fields until a source supports them.
+TMDB supplies metadata; Watchmode is the user-selected availability authority as of
+October 4, 2026. TMDB provider IDs are a cross-check, not entitlement evidence.
+The [free-key verification](plans/watchmode-verification.md) records source IDs,
+actual credit costs, returned link fields and unresolved ad-tier inclusion. The user
+selected the free plan and bounded full membership scans on October 4. Target daily
+scans; 2–3-day scanning does not satisfy the existing 48-hour eligibility rule.
+Refresh metadata and links incrementally from stored work queues, without paid
+change endpoints. The [sweeps plan](plans/availability-sweeps.md) and [evidence plan](plans/availability-evidence.md) define
+completion, absence evidence, budgets and retention. No paid action is authorized.
+Do not add package or playback fields unsupported by the verified source.
 
-PR 3 retains production-company identifiers/names and release-date semantics from validated metadata. Derive production-origin groups only from supported evidence, with a small versioned mapping and targeted review of ambiguity; provider availability and an acquired "Original" label do not prove who produced a movie. Unknowns remain eligible. Do not use origin as a proxy for quality.
+Metadata ingestion retains production-company identifiers/names and release-date semantics from validated metadata. Derive production-origin groups only from supported evidence, with a small versioned mapping and targeted review of ambiguity; provider availability and an acquired "Original" label do not prove who produced a movie. Unknowns remain eligible. Do not use origin as a proxy for quality.
 
-PR 4 records real responses for 5–10 subscribed-service movies. Use exact provider variants as enabled units and verify channel/ad-tier names. TMDB supplies country/provider availability and a country-level watch-page link, not full direct playback links. Display `Where to watch`, with matching service names separately. Attribute JustWatch and TMDB as required.
+The availability follow-up records real Watchmode responses for 5–10 subscribed-service
+movies. Use exact provider variants as enabled units and verify channel/ad-tier
+semantics. Service-level subscription offers with unknown ad-tier inclusion do not
+confirm entitlement; the explicit Disney+/Hulu exception in section 6 permits
+eligibility with a visible uncertainty label. Four initial samples are recorded in the verification evidence;
+these do not complete the production availability acceptance. Watchmode web links
+and paid-only mobile deep links have distinct semantics. The UI work must validate
+supported destinations and implement required Watchmode/TMDB attribution. TMDB's
+country-level watch-page information remains a cross-check with its own JustWatch
+attribution requirements.
 
-TMDB's documented watch-provider response supplies current offers, not a verified date a movie joined each service. Use successful observations to detect arrivals per exact provider variant, region, and offer type. A successful absence followed by presence within a bounded observation gap supports an arrival interval, not an exact launch date. Initial presence, newly tracked titles/services, and unsupported arrival intervals spanning failed checks or long monitoring gaps yield unknown arrival freshness. Failed checks do not erase previously established arrival evidence. PR 4 defines and tests the maximum usable observation gap. Repeated refreshes must not reset the arrival clock; removal/reappearance is a separate episode, with a documented policy that prevents repeated artificial freshness boosts. Use a source-supplied arrival date only after its semantics, reliability, access, and licensing are verified. Explanations say "recently observed on your service" when that is all the evidence supports.
+Watchmode sweep membership supplies observed availability, not an exact date a movie
+joined a service. Omission from a complete promoted per-service sweep is absence
+evidence, including for a title first appearing later. Arrival requires that complete
+absence at most 48 hours before presence, with no failed/partial sweep between them.
+The first sweep of a service and newly configured service generations remain unknown.
+Consecutive complete `present → absent → present` is continuity consistent with
+pagination drift, never a new arrival; apply that rule before interval derivation.
+Partial/failed sweeps cannot prove absence. Repeated presence does not reset the
+arrival clock. Availability: evidence defines the retained interval/episode inputs;
+ranking owns bounded boosts, with no stacked credit for multiple subscriptions.
+Explanations say "recently observed on your service" when that is the evidence.
 
 | Data | Initial refresh policy |
 |---|---|
@@ -267,7 +313,18 @@ TMDB's documented watch-provider response supplies current offers, not a verifie
 
 Use **daily Vercel Cron** to invoke a server refresh handler protected by `CRON_SECRET`; verify its bearer authorization before accessing privileged data. No pg_cron, pg_net, or Vault scheduler in V0. Keep refresh logic in shared server modules so a CLI can run the same job.
 
-Cron itself does not automatically retry failed invocations. Implement bounded retries for transient provider failures, per-movie progress/checkpoints, and a database lease to prevent overlapping cron/manual runs. Prioritize selected/flagged and active eligible movies, not the entire metadata universe.
+Cron itself does not automatically retry failed invocations. Availability workers
+implement bounded transient retries, progress/checkpoints and a shared session-level
+PostgreSQL advisory lock preventing overlapping manual/refresh runs. Hosting owns
+the refresh worker's dedicated direct or session-mode database connection; transaction
+pooling cannot preserve a session-level lock. Supabase's session pooler uses port
+5432; its transaction pooler uses 6543. Verify the actual endpoint/mode and connection
+lifetime before scheduling ([Supabase connection modes](https://supabase.com/docs/guides/database/connecting-to-postgres)). Hosting also owns
+the protected cron handler, scheduler wiring and cron-denial tests. The
+[hosting plan note](plans/hosting.md) requires bounded retry within an interrupted
+sweep's six-hour resume window and preserved original failure diagnostics. The availability
+plans expose local workers without adding an HTTP handler. Prioritize selected/flagged
+and active eligible metadata/link work rather than the entire metadata universe.
 
 Benchmark daily active-pool coverage below the function duration with margin. Use bounded concurrency compatible with TMDB limits and stop/checkpoint before timeout. Do not rely on detached background work after returning. If the workload cannot fit, reduce the active pool while preserving useful coverage or revisit the scheduler/plan explicitly before the trial. Initial full ingestion and classification are scripts, not cron payloads.
 
@@ -275,21 +332,75 @@ Persist `refresh_runs`. Log an invocation start/failure to Vercel before contact
 
 Supabase Free can pause projects with low user database activity over seven days. Daily refresh is not a guarantee against pausing. Vercel's external invocation can record a failed database connection but cannot automatically unpause it. A paid-tier decision, if needed for reliability, requires explicit discussion.
 
-Seed candidates availability-first using US discovery, enabled provider IDs, and subscription monetization; verify per-title offers before eligibility. Classify watchable candidates first. Import rated movies independently even when unavailable. Target 500–1,000 metadata records only as needed; eligible coverage and classification review budget matter more than raw catalog size.
+Seed candidates availability-first using Watchmode US movie subscription lists for
+the four verified direct services. Complete per-service membership scans cover the
+service lists; enrich a balanced subset of initially at most 1,000 unique movie
+records through TMDB. The membership index is separate from that metadata cap.
+Classify watchable candidates first. Import rated movies independently even when
+unavailable. Eligible coverage and classification review budget matter more than
+raw catalog size. Expand the enriched catalog only when coverage evidence calls for it.
 
-Discovery must cover subscribed services, recent and older release cohorts, and studio/independent/streamer-produced movies without relying solely on the first popularity-sorted page. PR 3 defines bounded discovery batches, deduplication, pagination limits, and coverage diagnostics; PR 4 verifies actual offers. Unknown production origin stays in the pool. Diagnose missing groups at discovery, availability, hard filtering, and scoring rather than forcing an arbitrary catalog quota or relaxing personal rules. All metadata/observation enrichment remains offline; no extra provider or LLM call is added to a pick request.
+Refresh provider destinations for the active shortlist in background jobs and cache
+them within Watchmode's 30-day limit. Ordinary picks never call `/sources` or any
+other provider. Membership freshness and link-cache age are distinct. A partial
+scan cannot establish an absent offer or arrival; missing tracked titles need a
+complete promoted per-service sweep before omission can support absence. Targeted
+source checks supply links/current offers but are not an arrival prerequisite.
+
+### Retention and replay limits
+
+Provider retention limits apply to historical evidence and private response/report
+caches as well as current catalog rows. Watchmode free-plan data expires after
+30 days; TMDB data must be re-fetched or purged within six calendar months. Begin
+refreshing at five calendar months, with bounded retries across the remaining
+window. Updating a current
+row does not renew historical copies. Provider account termination also requires
+the applicable data purge.
+
+Availability: evidence adds a time-bounded invoker guard on availability snapshots,
+offers, observations, tracks and new Watchmode cache/evidence tables. It always
+denies UPDATE; direct DELETE requires an immutable checked/observed timestamp older
+than the configured retention window. Preserve existing FK-cascade DELETE allowances
+and grants/RLS. Use no maintenance-owner role, SECURITY DEFINER retention function
+or role-aware bypass; unrelated immutable guards remain unchanged. This migration
+is planned, not implemented by the current schema.
+
+TMDB refresh/retirement uses ordinary movie UPDATEs. Preserve the UUID and first-party
+ratings, feedback and session metrics; retire and clear expired provider fields
+only after the six-calendar-month deadline passes with all scheduled attempts
+failed. A confirmed TMDB 404 is the only early "gone" signal; failed refreshes never
+stamp successful refresh time. Record external-ID acquisition provenance: IDs from
+first-party ratings input survive TMDB retirement, as do independently fresh
+Watchmode IDs subject to Watchmode's own 30-day cache limit. A later successful
+refresh can restore the same UUID. Recommendation work
+owns trace/classification/recommendation redaction and expiry-aware references.
+Traces must reference provider data rather than copy it. Replay ends when required
+evidence expires and reports `evidence_expired`; refreshing current data cannot
+recreate original evidence. Availability work does not rewrite immutable personal
+or classification history.
+
+Discovery must cover subscribed services, recent and older release cohorts, and studio/independent/streamer-produced movies without relying solely on the first popularity-sorted page. Metadata work defines bounded discovery batches, deduplication, pagination limits, and coverage diagnostics; Availability: evidence verifies actual offers. Unknown production origin stays in the pool. Diagnose missing groups at discovery, availability, hard filtering, and scoring rather than forcing an arbitrary catalog quota or relaxing personal rules. All metadata/observation enrichment remains offline; no extra provider or LLM call is added to a pick request.
 
 Respect provider limits, validate payloads, and make ingest repeatable. Verify caching/retention and licensing terms for the intended use; commercial operation requires a separate licensing assessment.
 
 ## 9. Traces, tests, and experiment
 
-Immutable JSONB traces capture request/session, sequence, timestamp, timing; algorithm/config/rubric versions; profile and context snapshots; catalog identities; exclusions and counts; candidate component scores/ranking; selected winner/tie-break; explanation inputs; and actual metadata/availability/classification inputs or immutable references. Capture freshness evidence/intervals, origin evidence/version, the near-equivalent shortlist, adjustments, and recent recommendation history used for variety. Report origin and release/arrival cohort counts at catalog, available, eligible, and shown stages, including unknown/mixed counts and filter attrition. Persist experiment arm/seed/version when enabled.
+Immutable JSONB traces capture request/session, sequence, timestamp, timing;
+algorithm/config/rubric versions; first-party profile/context snapshots; catalog
+identities; exclusions/counts; scores/ranking; winner/tie-break; and references to
+the actual versioned provider/classification evidence used. Reference provider data
+rather than copying it into traces. A mutable current movie row or a fingerprint
+alone cannot stand in for the original inputs. Recommendation work owns the
+reference/expiry and any legacy-copy redaction design. Capture the near-equivalent
+shortlist, adjustments and relevant first-party history for variety; link to retained
+freshness/origin evidence. Report cohort counts and filter attrition, including
+unknown/mixed values. Persist experiment arm/seed/version when enabled.
 
-A fingerprint detects changes but cannot reproduce overwritten input. Ranking replay uses frozen data and persisted classifier outputs, not today's database or a fresh LLM call.
+A fingerprint detects changes but cannot reproduce overwritten input. Ranking replay uses frozen data and persisted classifier outputs, not today's database or a fresh LLM call. Exact replay ends when required provider evidence expires under section 8; never regenerate missing historical evidence from current responses or report that as the original replay.
 
 Tests cover deterministic rankings, score behavior, watched/unavailable/rental/wrong-variant exclusions, uncertainty, hard boundaries, subtitle context, cooldown/expiry edges, empty/stale pools, provider failures, session locking, idempotency, selection correction before/after deadline, metric finalization, refresh checkpoint/lease behavior, and ownership. Use recorded provider fixtures; live checks remain separate. Tests accompany implementation before review.
 
-Freshness tests cover decay/boundaries, unknown/future dates, initial import, observed absence-to-presence intervals, repeated refreshes, outages/gaps, removal/reappearance, multiple subscriptions without stacked boosts, and old films newly available. Origin tests cover production versus distribution, co-productions, unknown metadata, sparse/single-origin pools, repeat exposure, and deterministic replay. Prove that policy adjustments cannot breach hard gates, pull candidates from outside the configured near-equivalent shortlist, or suppress older/studio/independent candidates solely because of origin or missing evidence. Compare rankings with adjustments disabled and enabled; report concentration, fit/quality changes, and sample sizes before fixing PR 6 parameters. Do not assume an equal origin mix is the correct target.
+Freshness tests cover decay/boundaries, unknown/future dates, initial import, observed absence-to-presence intervals, repeated refreshes, outages/gaps, removal/reappearance, multiple subscriptions without stacked boosts, and old films newly available. Origin tests cover production versus distribution, co-productions, unknown metadata, sparse/single-origin pools, repeat exposure, and deterministic replay. Prove that policy adjustments cannot breach hard gates, pull candidates from outside the configured near-equivalent shortlist, or suppress older/studio/independent candidates solely because of origin or missing evidence. Compare rankings with adjustments disabled and enabled; report concentration, fit/quality changes, and sample sizes before fixing ranking parameters. Do not assume an equal origin mix is the correct target.
 
 ### Personal trial
 
@@ -342,56 +453,62 @@ Keep documentation small: architecture, recommendation/rubric/evaluation, and ro
 
 ### V0 personal preference setup
 
-PR 8 includes a small first-run setup/settings screen before the phone trial. Save enabled streaming services and exact add-on variants, runtime ceiling, known languages/subtitle preference, and horror/emotional preferences to the single personal profile. Distinguish ordinary preferences from strict exclusions using the evidence policies in section 4. Do not connect to streaming accounts or request their credentials.
+Phone-experience work includes a small first-run setup/settings screen before the phone trial. Save enabled streaming services and exact add-on variants, runtime ceiling, known languages/subtitle preference, and horror/emotional preferences to the single personal profile. Distinguish ordinary preferences from strict exclusions using the evidence policies in section 4. Do not connect to streaming accounts or request their credentials.
 
 Runtime is one saved **maximum movie length** in preferences, enforced as a hard ceiling. Show the actual runtime on the recommendation card. Keep the home screen focused on the pick button: no time-tonight prompt, runtime presets, or multiple runtime modes. Unknown runtimes are ineligible; a movie exactly at the limit is eligible. Do not favor shorter movies solely because of length within the permitted range. Record the effective saved limit in traces and cover boundary/missing-runtime behavior in engine tests. Nightly overrides, runtime modes, and runtime-based ranking adjustments are deferred until actual use justifies them.
 
-For local testing, use a seeded profile with clearly identified fixture values. For the deployed phone trial, associate the personal profile with the real pre-provisioned private login from PR 7; do not expose a dummy account. Require confirmation of the trial preferences before starting measured sessions. Keep setup outside the one-button home flow and allow later edits in settings. Record profile revisions in recommendation traces and flag changes during a measurement phase.
+For local testing, use a seeded profile with clearly identified fixture values. For the deployed phone trial, associate the personal profile with the real pre-provisioned private login from API, sessions and Auth work; do not expose a dummy account. Require confirmation of the trial preferences before starting measured sessions. Keep setup outside the one-button home flow and allow later edits in settings. Record profile revisions in recommendation traces and flag changes during a measurement phase.
 
 V1 adds broader new-user onboarding, self-service account creation, and multiple-user isolation. The basic preference screen is V0 scope; later settings work is polish rather than a prerequisite for the trial.
 
-## 11. PR-sized roadmap
+## 11. Work-area roadmap
+
+Roadmap items are work areas, not GitHub PR numbers.
 
 Workflow: scope → implementation plan → implementation with tests → checks → review → adjudication → revisions with checks → re-review → merge. This document is planning only.
 
-| PR | Scope and exit evidence |
+| Work area | Scope and exit evidence |
 |---|---|
-| 1 | Foundation, pure domain/engine boundary, ID types, fixtures/test runner, secret-file conventions and dependency checks; forbidden imports/type substitutions rejected |
-| 2 | Schema, grants/RLS and fixture inserts, including storage for origin evidence and availability observations; constraints and anonymous-access denial verified without provider resolution |
-| 3 | Metadata adapter, bounded discovery/ingest across services, release cohorts and production origins; release/origin evidence and resolved personal ratings import; unknowns, coverage gaps, ambiguity and deduplication verified |
-| 4 | Availability/provider variants, evidence-backed arrival intervals, response fixtures, protected cron handler/refresh workflow, stale outcomes; initial-import/gap/reappearance cases, runtime/coverage benchmark and pre-PR-5 review-load estimate |
-| 5 | Anchor rubric, batch classification and targeted review; uncertainty/provenance, review budget, distinction/correlation evidence and eligible coverage |
-| 6 | Pure filters/ranking with bounded freshness and origin-variety policy; mandatory gates, replay, shared trial policy, concentration diagnostics and ablations tested; held-out comparisons and exact configuration documented |
-| 7 | Orchestration, transactions, session expiry/selection correction, traces/replay CLI, single-user Auth, authorization/request protection/rate limits and recovery/deletion procedure; two-identity isolation and rejection/retry checks verified |
-| 8 | Stable one-card phone flow, basic first-run preference setup/settings, minimal PWA install/login, approved randomized assignment; saved preferences and deployment/security gate verified before the trial |
-| 9 | Settings refinement and visual polish; separate evaluation phase if selection flow changes materially |
-| 10 | Offline/error polish and operational recovery/hardening; actual iPhone checks |
+| Foundation | Foundation, pure domain/engine boundary, ID types, fixtures/test runner, secret-file conventions and dependency checks; forbidden imports/type substitutions rejected |
+| Schema | Schema, grants/RLS and fixture inserts, including storage for origin evidence and availability observations; constraints and anonymous-access denial verified without provider resolution |
+| Metadata | Metadata adapter, bounded discovery/ingest across services, release cohorts and production origins; release/origin evidence and resolved personal ratings import; unknowns, coverage gaps, ambiguity and deduplication verified |
+| Availability: sweeps | [Plan](plans/availability-sweeps.md): Watchmode provider, round-robin complete sweeps/checkpoints, balanced popularity-ordered TMDB enrichment, advisory lock, per-run cap and quota preflight; completeness/identity/starvation/budget/resume checks |
+| Availability: evidence | [Plan](plans/availability-evidence.md): offers/variants, complete-sweep absence and drift-aware arrival intervals, background links, age-based retention migration and movie retirement; initial/gap/partial/drift/retention checks and pre-classification coverage estimate |
+| Hosting | [Plan note](plans/hosting.md): protected cron handler and denial tests, scheduler/database-secret setup, timely partial-sweep recovery and bounded refresh runtime benchmark; deployment only after separate authorization |
+| Classification | Anchor rubric, batch classification and targeted review; uncertainty/provenance, review budget, distinction/correlation evidence and eligible coverage |
+| Ranking | Pure filters/ranking with bounded freshness and origin-variety policy; mandatory gates, replay, shared trial policy, concentration diagnostics and ablations tested; held-out comparisons and exact configuration documented |
+| API, sessions and Auth | Orchestration, transactions, session expiry/selection correction, traces/replay CLI, single-user Auth, authorization/request protection/rate limits and recovery/deletion procedure; two-identity isolation and rejection/retry checks verified |
+| Phone experience | Stable one-card phone flow, basic first-run preference setup/settings, minimal PWA install/login, approved randomized assignment; saved preferences and deployment/security gate verified before the trial |
+| Settings and visual polish | Settings refinement and visual polish; separate evaluation phase if selection flow changes materially |
+| PWA and operations | Offline/error polish and operational recovery/hardening; actual iPhone checks |
 | Later | Multi-user onboarding/isolation/export/deletion, shared-learning disclosure/participation controls and aggregate evaluation; advanced shared models and commercialization only after validation |
 
-Deploying the cron handler requires configured hosting/database secrets and protection, but does not expose personal profile writes. PR 7 adds application-user access before the phone trial. Initial ingestion/classification can run locally before deployment.
+Deploying the cron handler requires configured hosting/database secrets and protection, but does not expose personal profile writes. API, sessions and Auth work adds application-user access before the phone trial. Initial ingestion/classification can run locally before deployment.
 
-### Recommended coding models by PR
+### Recommended coding models by work area
 
-These recommendations concern the coding agent implementing/reviewing each PR, not an LLM running in the app. They do not change the current chat's model or authorize automatic model switching. The batch movie-classification model in PR 5 is a separate choice made through anchor-set evaluation.
+These recommendations concern the coding agent implementing/reviewing each work area, not an LLM running in the app. They do not change the current chat's model or authorize automatic model switching. The batch movie-classification model in classification work is a separate choice made through anchor-set evaluation.
 
 Use GPT-6.1 Sol as the usual implementation model; reserve GPT-6 Astra for ambiguous classification design, core ranking, and transaction/auth correctness. Reasoning settings and assignments below are engineering judgments informed by [official OpenAI model-selection guidance](https://developers.openai.com/api/docs/guides/model-selection), not benchmarked guarantees for this repository. Exact model IDs are `gpt-6.1-sol` and `gpt-6-astra`, as exposed by this Codex host when the plan was written.
 
-| PR | Implementation model | Reasoning effort | Review model / effort | Reason |
+| Work area | Implementation model | Reasoning effort | Review model / effort | Reason |
 |---|---|---|---|---|
-| 1 — Foundation | GPT-6.1 Sol | Medium | GPT-6.1 Sol / High | Bounded setup, types and import boundaries |
-| 2 — Database schema | GPT-6.1 Sol | High | GPT-6 Astra / High | Constraints, ownership and future migration consequences |
-| 3 — Metadata and ratings import | GPT-6.1 Sol | High | GPT-6.1 Sol / High | Identity resolution, validation and repeatable ingest |
-| 4 — Availability and refresh | GPT-6.1 Sol | High | GPT-6 Astra / High | Provider ambiguity, leases, retries and runtime limits |
-| 5 — Classification workflow | GPT-6 Astra | High | GPT-6 Astra / Extra high | Rubric ambiguity, evidence quality and review workload |
-| 6 — Recommendation engine | GPT-6 Astra | High | GPT-6 Astra / Extra high | Product-critical scoring, hard gates and evaluation validity |
-| 7 — API, sessions and Auth | GPT-6 Astra | High | GPT-6 Astra / Extra high | Atomic state transitions, retries, metrics and access control |
-| 8 — Personal phone experience | GPT-6.1 Sol | High | GPT-6 Astra / High | UI/server integration, saved settings and experiment behavior |
-| 9 — Settings and visual polish | GPT-6.1 Sol | Medium | GPT-6.1 Sol / High | Focused presentation changes; increase effort if behavior changes |
-| 10 — PWA and operations | GPT-6.1 Sol | High | GPT-6 Astra / High | Offline behavior, persistent login and failure recovery |
+| Foundation | GPT-6.1 Sol | Medium | GPT-6.1 Sol / High | Bounded setup, types and import boundaries |
+| Schema | GPT-6.1 Sol | High | GPT-6 Astra / High | Constraints, ownership and future migration consequences |
+| Metadata | GPT-6.1 Sol | High | GPT-6.1 Sol / High | Identity resolution, validation and repeatable ingest |
+| Availability: sweeps | GPT-6.1 Sol | High | GPT-6 Astra / High | Provider decoding, balanced queues, lock and budget bounds |
+| Availability: evidence | GPT-6.1 Sol | High | GPT-6 Astra / High | Arrival ambiguity, links, retention and retirement |
+| Hosting | GPT-6.1 Sol | High | GPT-6 Astra / High | Protected scheduling and runtime configuration |
+| Classification workflow | GPT-6 Astra | High | GPT-6 Astra / Extra high | Rubric ambiguity, evidence quality and review workload |
+| Ranking | GPT-6 Astra | High | GPT-6 Astra / Extra high | Product-critical scoring, hard gates and evaluation validity |
+| API, sessions and Auth | GPT-6 Astra | High | GPT-6 Astra / Extra high | Atomic state transitions, retries, metrics and access control |
+| Personal phone experience | GPT-6.1 Sol | High | GPT-6 Astra / High | UI/server integration, saved settings and experiment behavior |
+| Settings and visual polish | GPT-6.1 Sol | Medium | GPT-6.1 Sol / High | Focused presentation changes; increase effort if behavior changes |
+| PWA and operations | GPT-6.1 Sol | High | GPT-6 Astra / High | Offline behavior, persistent login and failure recovery |
 
 Run reviews in a fresh context with the actual diff, acceptance criteria and test evidence. A separate review may use the same model; model diversity alone is not verification. Claude can continue as the user's additional independent reviewer; no particular Claude version is assumed here.
 
-Keep implementation and revisions on the same model unless a concrete failure or unresolved issue warrants escalation. Extra-high reasoning is reserved for demanding reviews rather than every routine edit. Reassess settings using observed correctness, rework and usage, and check available models before each PR. Model selection never replaces tests, actual iPhone verification or human decisions. The multi-user beta's model recommendation is chosen when its PR scopes are defined.
+Keep implementation and revisions on the same model unless a concrete failure or unresolved issue warrants escalation. Extra-high reasoning is reserved for demanding reviews rather than every routine edit. Reassess settings using observed correctness, rework and usage, and check available models before each work area. Model selection never replaces tests, actual iPhone verification or human decisions. The multi-user beta's model recommendation is chosen when its work scopes are defined.
 
 ## 12. Risks, approved decisions, and personal inputs
 
@@ -402,9 +519,9 @@ Approved product decisions:
 1. Trial assignment: approved hidden session-level personalized versus quality-first base ranking, with shared freshness/origin-variety policy as specified in section 9.
 2. Rewatches: approved unseen-only V0; a comfort-rewatch lane is deferred.
 3. Boundary design: approved structured-data-first exclusions and targeted review. Distinguish ordinary lighter-viewing preferences from strict theme exclusions because the latter may require additional review.
-4. Freshness and variety: bounded preferences for recent releases/observed subscription arrivals and production-origin variety among near-equivalent candidates; no origin exclusions or fixed quotas. PR 6 sets parameters and evaluates tradeoffs before enabling them.
+4. Freshness and variety: bounded preferences for recent releases/observed subscription arrivals and production-origin variety among near-equivalent candidates; no origin exclusions or fixed quotas. Ranking work sets parameters and evaluates tradeoffs before enabling them.
 
-Actual subscriptions/add-on variants, runtime ceiling, known languages/subtitle preference, and horror/emotional preferences will be collected through the V0 setup screen in PR 8 and confirmed before the trial. These values do not block architecture planning. Do not invent or silently hard-code personal preferences; local fixtures must be identified as fixtures.
+Actual subscriptions/add-on variants, runtime ceiling, known languages/subtitle preference, and horror/emotional preferences will be collected through the V0 setup screen in phone-experience work and confirmed before the trial. These values do not block architecture planning. Do not invent or silently hard-code personal preferences; local fixtures must be identified as fixtures.
 
 Also needed before prototyping: roughly 50–100 rated movies and representative easy/demanding anchors. No need to design dozens of sliders.
 

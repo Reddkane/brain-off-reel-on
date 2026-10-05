@@ -23,6 +23,7 @@ export const privateDirectory = resolve(".cache/real-catalog/private");
 // Only known internal codes are printable. Even a lowercase raw error/secret is
 // not trusted merely because it happens to look like an identifier.
 const diagnosticCodes = new Set([
+  "refresh_overlap", "refresh_lock_lost", "refresh_lock_failed",
   "invalid_action", "invalid_arguments", "image_pin", "image_not_cached",
   "container_identity", "container_binding", "container_network", "container_image",
   "container_id", "resource_identity", "resource_occupied", "port_occupied",
