@@ -1,19 +1,12 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import pg from "pg";
 import type { PoolClient } from "pg";
 import { array, object } from "../src/server/providers/tmdb-validation.ts";
 
-export async function migrationFiles() {
-  return (await readdir(new URL("../supabase/migrations/", import.meta.url)))
-    .filter(file => file.endsWith(".sql")).sort();
-}
-/** Explicit upgrade path for the separate catalog lifecycle's original schema baseline. */
-export async function upgradeCatalogFixture(client: PoolClient) {
-  for (const file of await migrationFiles()) if (file > "20261002000003_access.sql")
-    await client.query(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
-}
+import { migrationFiles } from "../src/server/db/migration-files.ts";
+export { migrationFiles } from "../src/server/db/migration-files.ts";
 
 export interface Disposable {
   readonly pool: pg.Pool;

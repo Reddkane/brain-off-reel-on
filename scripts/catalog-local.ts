@@ -5,6 +5,8 @@ import { createServer } from "node:net";
 import { pathToFileURL } from "node:url";
 import pg from "pg";
 import { boundedText, catalogCode, decodePassword, privateDirectory, privateJson } from "./catalog-config.ts";
+import { migrationFiles } from "../src/server/db/migration-files.ts";
+import { catalogSchemaState, currentMigrationCount, migrationTargetGuard } from "./catalog-schema.ts";
 import { localCatalogGuard } from "../src/server/db/local-catalog-target.ts";
 export const retained = Object.freeze({
   container: "bor-catalog-local",
@@ -208,7 +210,7 @@ export async function setupSchema(pool: pg.Pool, runtimePassword: string) {
     await client.query("BEGIN");
     await client.query(await readFile(new URL("./catalog-prerequisites.sql", import.meta.url), "utf8"));
     await client.query("COMMIT");
-    for (const file of ["20261002000001_catalog.sql", "20261002000002_personal.sql", "20261002000003_access.sql"]) {
+    for (const file of await migrationFiles()) {
       await client.query("BEGIN");
       await client.query(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
       await client.query("COMMIT");
@@ -225,6 +227,41 @@ export async function setupSchema(pool: pg.Pool, runtimePassword: string) {
     throw new Error(catalogCode(error, "setup_failed_inspect_required"));
   }
   finally {
+    client.release();
+  }
+}
+export async function upgradeSchema(pool: pg.Pool) {
+  if (pool.options.host !== "127.0.0.1" || pool.options.database !== "bor_catalog_local" ||
+    pool.options.user !== "postgres")
+    throw new Error("target_guard");
+  const client = await pool.connect();
+  let applied = 0, locked = false;
+  try {
+    await migrationTargetGuard(client);
+    const lock = await client.query("SELECT pg_try_advisory_lock(1112494674,1) AS locked");
+    if (!lock.rows[0]?.locked)
+      throw new Error("refresh_overlap");
+    locked = true;
+    const state = await catalogSchemaState(client);
+    const files = await migrationFiles();
+    for (const file of files.slice(state)) {
+      await client.query("BEGIN");
+      await migrationTargetGuard(client);
+      await client.query(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
+      await client.query("COMMIT");
+      applied++;
+    }
+    if (await catalogSchemaState(client) !== files.length)
+      throw new Error("upgrade_state_unknown");
+    return { applied, current: true };
+  }
+  catch (error) {
+    await client.query("ROLLBACK").catch(() => { });
+    throw new Error(catalogCode(error, "upgrade_failed_inspect_required"));
+  }
+  finally {
+    if (locked)
+      await client.query("SELECT pg_advisory_unlock(1112494674,1)").catch(() => { });
     client.release();
   }
 }
@@ -250,11 +287,8 @@ export async function completedSetup(pool: pg.Pool) {
       throw new Error("runtime_membership_invalid");
     await client.query("BEGIN READ ONLY; SET LOCAL ROLE service_role");
     // Inspect all released application relations and named immutable validators.
-    const result = await client.query("SELECT tablename FROM pg_tables WHERE schemaname='app' ORDER BY tablename");
-    const expected = ["availability_observations", "availability_snapshots", "availability_tracks", "feedback_events", "movie_availability", "movie_classifications", "movie_credits", "movie_external_ids", "movies", "profile_movies", "profile_subscriptions", "profiles", "recommendations", "refresh_runs", "selection_sessions", "streaming_provider_external_ids", "streaming_providers"];
-    const evidenceExpected=[...expected,'watchmode_sweeps','watchmode_pages','watchmode_memberships','watchmode_sweep_events','watchmode_enrichment_checks','metadata_detail_attempts','provider_retention_policy','movie_external_id_acquisitions','watchmode_offer_variants','watchmode_links','watchmode_arrivals'].sort();
-    if (![expected.join(','),evidenceExpected.join(',')].includes(result.rows.map(r => r.tablename).join(",")))
-      throw new Error("setup_incomplete");
+    if (await catalogSchemaState(client) !== currentMigrationCount)
+      throw new Error("upgrade_required");
     await client.query("SELECT app.text_array_nonblank(ARRAY[]::text[]),app.profile_content_policy_valid('{}'::jsonb)");
     await client.query("COMMIT");
   }
@@ -267,7 +301,7 @@ export async function completedSetup(pool: pg.Pool) {
   }
 }
 export async function localCommand(action: string, resources: CatalogResources = retained, directory = privateDirectory, io: Docker = docker) {
-  if (!["inspect", "setup", "start", "stop"].includes(action))
+  if (!["inspect", "setup", "upgrade", "start", "stop"].includes(action))
     throw new Error("invalid_action");
   await io(["version", "--format", "{{.Server.Version}}"]);
   const present = await io(["ps", "-a", "--filter", `name=^/${resources.container}$`, "--format", "{{.ID}}", "--no-trunc"]);
@@ -335,6 +369,23 @@ export async function localCommand(action: string, resources: CatalogResources =
     }
   }
   await inspectCatalog(resources, io);
+  let upgradeResult;
+  if (action === "upgrade") {
+    let adminPassword: string;
+    try {
+      adminPassword = decodePassword(privateJson(await boundedText(`${directory}/setup.json`, 4096)));
+    }
+    catch {
+      throw new Error("setup_credential_failed");
+    }
+    const admin = catalogPool(adminPassword, resources.port, true);
+    try {
+      upgradeResult = await upgradeSchema(admin);
+    }
+    finally {
+      await admin.end();
+    }
+  }
   let password: string;
   try {
     password = decodePassword(privateJson(await boundedText(`${directory}/runtime.json`, 4096)));
@@ -347,6 +398,7 @@ export async function localCommand(action: string, resources: CatalogResources =
     if (action === "start")
       await ready(pool);
     await completedSetup(pool);
+    return upgradeResult;
   }
   finally {
     await pool.end();
@@ -357,8 +409,8 @@ if (process.argv[1] &&
   try {
     if (process.argv.length !== 3)
       throw new Error("invalid_action");
-    await localCommand(process.argv[2]);
-    console.log("catalog_local_ok");
+    const result = await localCommand(process.argv[2]);
+    console.log(result ? (result.applied ? "catalog_upgrade_applied" : "catalog_upgrade_current") : "catalog_local_ok");
   }
   catch (error) {
     console.error(catalogCode(error, "catalog_local_failed_inspect_required"));

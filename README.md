@@ -268,6 +268,17 @@ npm run catalog:local -- stop
 npm run catalog:local -- start
 ```
 
+For an existing catalog, **separate retained upgrade authorization** is required
+before running `npm run catalog:local -- upgrade`. Upgrade reads the fixed setup
+credential, verifies the owned loopback target and marker, and recognizes only the
+original, sweeps and evidence inventories with their distinguishing columns and
+triggers. Inspect/start report `upgrade_required` for a recognized older catalog;
+obtain separate upgrade authorization and preserve its existing data. This code
+is not a failed fresh setup or a reason for disposal. Upgrade applies missing migrations in filename order, one transaction each;
+a failure preserves the previous complete state and reports a fixed code. A current
+catalog reports `catalog_upgrade_current` without replay. Setup discovers every
+SQL migration and inspection accepts only the current full schema.
+
 Setup uses fixed names, `127.0.0.1:55432`, unchanged migrations and a non-admin login.
 Start waits for readiness and accepts an already-running owned container; stop
 retains its volume. Missing image, collisions and partial setup refuse; plan §3

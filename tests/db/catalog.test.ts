@@ -7,7 +7,7 @@ import { readFile, writeFile, mkdtemp, unlink, rmdir, access } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
-import { catalogPool, completedSetup, createCatalogContainer, docker, inspectCatalog, localCommand, ready, refuseCollisions, setupSchema } from "../../scripts/catalog-local.ts";
+import { catalogPool, completedSetup, createCatalogContainer, docker, inspectCatalog, localCommand, ready, refuseCollisions, setupSchema, upgradeSchema } from "../../scripts/catalog-local.ts";
 import { catalogCommand } from "../../scripts/catalog-import.ts";
 import type { CatalogIO } from "../../scripts/catalog-import.ts";
 import { decodePassword, privateJson, firstImportLimits, subscriptions } from "../../scripts/catalog-config.ts";
@@ -15,7 +15,13 @@ import { localCatalogGuard, readCatalog } from "../../src/server/db/local-catalo
 import { acquireRefreshLock } from "../../src/server/db/refresh-lock.ts";
 import { createPgStore } from "../../src/server/db/pg-store.ts";
 import { fixtures } from "../../tooling/metadata-fixtures.ts";
-import { upgradeCatalogFixture } from "../../tooling/metadata-disposable.ts";
+import { catalogSchemaState, currentMigrationCount, currentTables } from "../../scripts/catalog-schema.ts";
+import { migrationFiles } from "../../src/server/db/migration-files.ts";
+test("catalog schema detection covers every migration", async () => {
+  assert.equal(currentMigrationCount, (await migrationFiles()).length,
+    "A migration was added; update catalogSchemaState detection and currentMigrationCount.");
+});
+
 async function unusedPort() {
   const server = createServer();
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -77,8 +83,11 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
       }
     });
     await setupSchema(admin, runtimePassword);
-    const upgradeClient=await admin.connect();
-    try { await upgradeCatalogFixture(upgradeClient); } finally { upgradeClient.release(); }
+    await t.test("fresh setup reaches the evidence inventory", async () => {
+      const tables = (await admin.query("SELECT tablename FROM pg_tables WHERE schemaname='app' ORDER BY tablename")).rows;
+      assert.deepEqual(tables.map(row => row.tablename), currentTables);
+      assert.deepEqual(await upgradeSchema(admin), { applied: 0, current: true });
+    });
     const runtime = pool();
     await completedSetup(runtime);
     await t.test("loopback binding/named mount, collision refusal and repeat inspection", async () => {
@@ -143,6 +152,7 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
           args.includes("create")).length;
         await localCommand("setup", operatorResources, directory, operatorDocker);
         await localCommand("inspect", operatorResources, directory, operatorDocker);
+        assert.deepEqual(await localCommand("upgrade", operatorResources, directory, operatorDocker), { applied: 0, current: true });
         assert.equal(calls.filter(args => args[0] === "run" ||
           args.includes("create")).length, mutations);
         assert(await readFile(`${directory}/setup.json`, "utf8") === setupFile);
@@ -360,6 +370,66 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
       }
     };
     const args = ["--config", ".cache/real-catalog/private/synthetic.json", "--as-of", "2026-10-03", "--live"];
+    await t.test("original and sweeps upgrades refuse import, backfill, and repeat without replay", async upgradeTest => {
+      for (const baseline of [3, 4]) await upgradeTest.test(`${baseline}-migration starting state`, async () => {
+        await admin.query("DROP SCHEMA app CASCADE");
+        for (const file of (await migrationFiles()).slice(0, baseline))
+          await admin.query(await readFile(new URL(`../../supabase/migrations/${file}`, import.meta.url), "utf8"));
+        await admin.query(`INSERT INTO app.movies(id,title,metadata_source,metadata_refreshed_at)
+          VALUES ('10000000-0000-4000-8000-000000000099','Invented legacy movie','tmdb','2026-09-01T12:00:00Z');
+          INSERT INTO app.movie_external_ids
+          VALUES ('10000000-0000-4000-8000-000000000099','tmdb','999099')`);
+        fetchCalls = 0;
+        await assert.rejects(completedSetup(runtime), /^Error: upgrade_required$/);
+        assert.equal(await catalogCommand(args, io), 1);
+        assert.equal(fetchCalls, 0);
+        await admin.query("CREATE TABLE app.unknown_state(id integer)");
+        await assert.rejects(upgradeSchema(admin), /upgrade_state_unknown/);
+        await admin.query("DROP TABLE app.unknown_state");
+        assert.deepEqual(await upgradeSchema(admin), { applied: 5 - baseline, current: true });
+        await completedSetup(runtime);
+        const acquisitions = (await admin.query("SELECT acquisition_path, acquired_at FROM app.movie_external_id_acquisitions")).rows;
+        assert.equal(acquisitions.length, 1);
+        assert.equal(acquisitions[0].acquisition_path, "tmdb_metadata");
+        assert.equal(acquisitions[0].acquired_at.toISOString(), "2026-09-01T12:00:00.000Z");
+        assert.deepEqual(await upgradeSchema(admin), { applied: 0, current: true });
+        assert.equal(await catalogCommand(args, io), 0);
+      });
+      reports.length = 0;
+    });
+    await t.test("migration failure preserves the previous complete state and rolls back partial evidence DDL", async () => {
+      await admin.query("DROP SCHEMA app CASCADE");
+      for (const file of (await migrationFiles()).slice(0, 3))
+        await admin.query(await readFile(new URL(`../../supabase/migrations/${file}`, import.meta.url), "utf8"));
+      await admin.query(`INSERT INTO app.movies(id,title,metadata_source,metadata_refreshed_at)
+        VALUES ('10000000-0000-4000-8000-000000000099','Invented legacy movie','tmdb','2026-09-01T12:00:00Z');
+        INSERT INTO app.movie_external_ids
+        VALUES ('10000000-0000-4000-8000-000000000099','tmdb','999099')`);
+      await admin.query(`CREATE FUNCTION public.synthetic_migration_failure() RETURNS event_trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF position('provider_retention_policy' in current_query()) > 0 THEN
+            RAISE EXCEPTION 'synthetic private failure';
+          END IF;
+        END $$;
+        CREATE EVENT TRIGGER synthetic_upgrade_failure ON ddl_command_start
+        EXECUTE FUNCTION public.synthetic_migration_failure()`);
+      try {
+        await assert.rejects(upgradeSchema(admin), /^Error: upgrade_failed_inspect_required$/);
+        const client = await admin.connect();
+        try { assert.equal(await catalogSchemaState(client), 4); }
+        finally { client.release(); }
+        // The evidence migration creates this index before its first table.
+        assert.equal((await admin.query("SELECT to_regclass('app.watchmode_memberships_page') AS value")).rows[0].value, null);
+        assert.equal((await admin.query("SELECT title FROM app.movies WHERE id='10000000-0000-4000-8000-000000000099'")).rows[0].title, "Invented legacy movie");
+      }
+      finally {
+        await admin.query("DROP EVENT TRIGGER synthetic_upgrade_failure; DROP FUNCTION public.synthetic_migration_failure()");
+      }
+      assert.deepEqual(await upgradeSchema(admin), { applied: 1, current: true });
+      await completedSetup(runtime);
+      assert.equal(await catalogCommand(args, io), 0);
+      reports.length = 0;
+    });
     await t.test("legacy importer shares availability lock and refuses overlap before provider calls",async()=>{
       const held=await acquireRefreshLock(runtime,localCatalogGuard,controller.signal);
       const beforeCalls=fetchCalls;
