@@ -1,12 +1,19 @@
 // Isolated synthetic resources only. This file alone owns destructive cleanup.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
-import { readFile, writeFile, mkdtemp, unlink, rmdir, access } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, unlink, rmdir, access, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
+import { spawn } from "node:child_process";
+import { createReadStream } from "node:fs";
+import { Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { backupCatalog, identityDigestSql, sameIdentity, verifyBackup } from "../../scripts/catalog-backup.ts";
+import { expirePrivateEvidence } from "../../src/server/ingestion/private-evidence-cleanup.ts";
+import { withDisposable, docker as disposableDocker } from "../../tooling/metadata-disposable.ts";
 import { catalogPool, completedSetup, createCatalogContainer, docker, inspectCatalog, localCommand, ready, refuseCollisions, setupSchema, upgradeSchema } from "../../scripts/catalog-local.ts";
 import { catalogCommand } from "../../scripts/catalog-import.ts";
 import type { CatalogIO } from "../../scripts/catalog-import.ts";
@@ -371,7 +378,7 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
     };
     const args = ["--config", ".cache/real-catalog/private/synthetic.json", "--as-of", "2026-10-03", "--live"];
     await t.test("original and sweeps upgrades refuse import, backfill, and repeat without replay", async upgradeTest => {
-      for (const baseline of [3, 4]) await upgradeTest.test(`${baseline}-migration starting state`, async () => {
+      for (const baseline of [3, 4]) await upgradeTest.test(`${baseline}-migration starting state`, async baselineTest => {
         await admin.query("DROP SCHEMA app CASCADE");
         for (const file of (await migrationFiles()).slice(0, baseline))
           await admin.query(await readFile(new URL(`../../supabase/migrations/${file}`, import.meta.url), "utf8"));
@@ -386,7 +393,155 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
         await admin.query("CREATE TABLE app.unknown_state(id integer)");
         await assert.rejects(upgradeSchema(admin), /upgrade_state_unknown/);
         await admin.query("DROP TABLE app.unknown_state");
-        assert.deepEqual(await upgradeSchema(admin), { applied: 5 - baseline, current: true });
+        const root = await mkdtemp(join(tmpdir(), "bor-backup-acceptance-"));
+        try {
+          const directory = join(root, ".cache/real-catalog/private");
+          await mkdir(directory, { recursive: true });
+          await writeFile(join(directory, "setup.json"), JSON.stringify({ password: adminPassword }));
+          const runBackup = (phase: "before-upgrade" | "after-upgrade") => localCommand("backup", resources, directory, docker, { phase, root, signal: controller.signal });
+          if (baseline === 4) {
+            await assert.rejects(runBackup("before-upgrade"), /backup_phase_mismatch/);
+            assert.deepEqual(await readdir(directory), ["setup.json"]);
+          }
+          else {
+            await admin.query("CREATE TABLE app.synthetic_backup_unknown(id integer)");
+            try { await assert.rejects(runBackup("before-upgrade"), /upgrade_state_unknown/); }
+            finally { await admin.query("DROP TABLE app.synthetic_backup_unknown"); }
+            assert.deepEqual(await readdir(directory), ["setup.json"]);
+            await assert.rejects(backupCatalog("before-upgrade", {
+              root, containerId: id, pool: runtime, signal: controller.signal,
+              sha: async () => "446f78f05f53ce08f296766c5c66b5d52065d296", inspect: () => inspectCatalog(resources, docker, id),
+            }), /target_guard/);
+            assert.deepEqual(await readdir(directory), ["setup.json"]);
+            const before = await runBackup("before-upgrade");
+            assert(before && "digest" in before);
+            const archive = await readFile(before.dump);
+            assert.equal(archive.subarray(0, 5).toString(), "PGDMP");
+            assert.equal(archive.length, before.bytes);
+            assert.equal(createHash("sha256").update(archive).digest("hex"), before.sha256);
+            assert.equal(JSON.parse(await readFile(before.manifest, "utf8")).success, true);
+            await assert.rejects(runBackup("after-upgrade"), /backup_phase_mismatch/);
+            assert.equal((await readdir(directory)).length, 3);
+            // Actual restore into another inspected tmpfs cluster with explicit platform prerequisites.
+            await withDisposable(async restore => {
+              const created = await disposableDocker(["exec", "-i", restore.containerId, "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres"],
+                "CREATE ROLE bor_catalog_ingest NOLOGIN; CREATE DATABASE bor_backup_restore;");
+              assert.equal(created.code, 0);
+              const child = spawn("docker", ["exec", "-i", restore.containerId, "pg_restore", "--exit-on-error", "--no-owner", "--no-privileges",
+                "--host=/var/run/postgresql", "--username=postgres", "--dbname=bor_backup_restore"], { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], signal: AbortSignal.timeout(30000) });
+              child.stdout.resume(); child.stderr.resume();
+              const exit = new Promise<number>((resolve, reject) => { child.on("error", reject); child.on("close", code => resolve(code ?? 1)); });
+              await pipeline(createReadStream(before.dump), child.stdin);
+              assert.equal(await exit, 0);
+              const restored = await disposableDocker(["exec", "-i", restore.containerId, "psql", "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "bor_backup_restore"],
+                `SELECT row_to_json(d) FROM (${identityDigestSql}) d;`);
+              assert.equal(restored.code, 0);
+              // psql JSON emits numeric counts; normalize only its count serialization.
+              const digest = JSON.parse(restored.output);
+              for (const key of Object.keys(digest)) if (typeof digest[key] === "number") digest[key] = String(digest[key]);
+              assert(sameIdentity(before.digest, digest));
+            });
+            const backupIO = { root, containerId: id, pool: admin, signal: controller.signal,
+              sha: async () => "446f78f05f53ce08f296766c5c66b5d52065d296", inspect: () => inspectCatalog(resources, docker, id) };
+            const collision = { ...backupIO, id: () => before.id };
+            await assert.rejects(backupCatalog("before-upgrade", collision), /backup_file_exists/);
+            assert.deepEqual(await readFile(before.dump), archive, "existing restore point must remain byte-identical");
+            await baselineTest.test("snapshot/socket authentication and contender exclusion throughout streaming", async () => {
+              let commands = 0;
+              const contenders: Promise<void>[] = [];
+              const copy = await backupCatalog("before-upgrade", { ...backupIO,
+                spawn: (args, signal) => {
+                  commands++;
+                  contenders.push((async () => {
+                    const client = await admin.connect();
+                    try {
+                      const held = (await client.query("SELECT pg_try_advisory_lock(1112494674,1) AS held")).rows[0].held;
+                      if (held) await client.query("SELECT pg_advisory_unlock(1112494674,1)");
+                      assert.equal(held, false, "contender must refuse during both dump and archive validation");
+                    }
+                    finally { client.release(); }
+                  })());
+                  if (args.includes("pg_dump")) {
+                    assert(args.includes("--no-password") && args.includes("--host=/var/run/postgresql"));
+                    assert(args.some(arg => arg.startsWith("--snapshot=")));
+                    assert(!args.some(arg => /password=/.test(arg)));
+                  }
+                  // Query a separate session while the snapshot coordinator remains checked out.
+                  const child = spawn("docker", args, { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], signal });
+                  return child;
+                },
+              });
+              await Promise.all(contenders);
+              assert.equal(commands, 2);
+              await verifyBackup(copy.dump, copy.manifest, controller.signal);
+              const manifest = JSON.parse(await readFile(copy.manifest, "utf8"));
+              await writeFile(copy.manifest, JSON.stringify({ ...manifest, sha256: "0".repeat(64) }));
+              await assert.rejects(verifyBackup(copy.dump, copy.manifest, controller.signal), /backup_manifest_invalid/);
+              await writeFile(copy.manifest, JSON.stringify({ ...manifest, schemaState: 4 }));
+              await assert.rejects(verifyBackup(copy.dump, copy.manifest, controller.signal), /backup_manifest_invalid/);
+              await writeFile(copy.manifest, JSON.stringify(manifest));
+              await unlink(copy.dump); await unlink(copy.manifest);
+            });
+            await baselineTest.test("authentication/archive/timeout/cancellation/lock-loss failures invalidate only owned partial files", async () => {
+              const original = await readdir(directory);
+              const syntheticChild = (source: string, signal: AbortSignal) => spawn(process.execPath, ["-e", source], {
+                shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], signal,
+              });
+              await assert.rejects(backupCatalog("before-upgrade", { ...backupIO,
+                spawn: (_args, signal) => syntheticChild("process.stderr.write('invented_secret_sentinel'); process.exit(1)", signal),
+              }), /backup_dump_failed/);
+              await assert.rejects(backupCatalog("before-upgrade", { ...backupIO,
+                spawn: (args, signal) => args.includes("pg_dump") ? syntheticChild("process.stdout.write('synthetic invalid archive')", signal) :
+                  spawn("docker", args, { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], signal }),
+              }), /backup_archive_invalid/);
+              await assert.rejects(backupCatalog("before-upgrade", { ...backupIO,
+                stream: () => new Writable({ write(_chunk, _encoding, callback) { callback(new Error("synthetic disk failure sentinel")); } }),
+              }), /backup_dump_failed/);
+              await assert.rejects(backupCatalog("before-upgrade", { ...backupIO, durationMs: 1000,
+                spawn: (_args, signal) => syntheticChild("process.stdout.write('PGDMP'); setInterval(()=>{},1000)", signal),
+              }), /backup_deadline/);
+              const cancelled = new AbortController();
+              await assert.rejects(backupCatalog("before-upgrade", { ...backupIO, signal: cancelled.signal,
+                spawn: (_args, signal) => { const child = syntheticChild("process.stdout.write('PGDMP'); setInterval(()=>{},1000)", signal); setTimeout(() => cancelled.abort(), 50); return child; },
+              }), /backup_cancelled/);
+              await assert.rejects(backupCatalog("before-upgrade", { ...backupIO,
+                spawn: (_args, signal) => {
+                  const child = syntheticChild("process.stdout.write('PGDMP'); setInterval(()=>{},1000)", signal);
+                  void admin.query(`SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype='advisory'
+                    AND classid=1112494674 AND objid=1 AND objsubid=2 AND granted`).catch(() => {});
+                  return child;
+                },
+              }), /backup_lock_lost/);
+              assert.deepEqual(await readdir(directory), original);
+              const contender = await admin.connect();
+              try { assert.equal((await contender.query("SELECT pg_try_advisory_lock(1112494674,1) AS held")).rows[0].held, true); await contender.query("SELECT pg_advisory_unlock(1112494674,1)"); }
+              finally { contender.release(); }
+            });
+            await assert.rejects(backupCatalog("before-upgrade", {
+              root, containerId: id, pool: admin, signal: controller.signal, sha: async () => "446f78f05f53ce08f296766c5c66b5d52065d296", inspect: () => inspectCatalog(resources, docker, id), maxBytes: 1,
+            }), /backup_size_limit/);
+            assert.equal((await readdir(directory)).length, 3, "failed streaming must remove only its partial file");
+            await admin.query("UPDATE app.movies SET metadata_refreshed_at=metadata_refreshed_at+interval '1 microsecond'");
+            try {
+              const changed = (await admin.query(identityDigestSql)).rows[0];
+              assert.equal(sameIdentity(before.digest, changed), false, "timestamp mutation must change the identity digest");
+            }
+            finally { await admin.query("UPDATE app.movies SET metadata_refreshed_at=metadata_refreshed_at-interval '1 microsecond'"); }
+            await upgradeSchema(admin);
+            const after = await runBackup("after-upgrade");
+            assert(after && "digest" in after);
+            assert(sameIdentity(before.digest, after.digest));
+            assert.deepEqual(after.acquisition, { acquisition_mismatches: "0", unexpected_acquisitions: "0" });
+            await assert.rejects(runBackup("before-upgrade"), /backup_phase_mismatch/);
+            const names = await readdir(directory);
+            for (const name of names.filter(n => n.startsWith("catalog-backup-")))
+              assert(!/^(?:provider-list|run-report)-[a-f0-9-]{36}\.json$/.test(name));
+            await expirePrivateEvidence(root, Date.now(), controller.signal);
+            assert.deepEqual(await readdir(directory), names);
+          }
+        }
+        finally { await rm(root, { recursive: true, force: true }); await assert.rejects(access(root)); }
+        assert.deepEqual(await upgradeSchema(admin), { applied: baseline === 3 ? 0 : 5 - baseline, current: true });
         await completedSetup(runtime);
         const acquisitions = (await admin.query("SELECT acquisition_path, acquired_at FROM app.movie_external_id_acquisitions")).rows;
         assert.equal(acquisitions.length, 1);

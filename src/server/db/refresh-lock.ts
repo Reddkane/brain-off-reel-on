@@ -3,6 +3,7 @@ import { SweepError } from "../providers/watchmode.ts";
 export interface RefreshLock {
   readonly signal: AbortSignal;
   check(): Promise<void>;
+  inspect(work: (client: PoolClient) => Promise<void>): Promise<void>;
   release(): Promise<void>;
 }
 /** One application-wide key shared by manual ingestion and availability work. */
@@ -50,6 +51,20 @@ export async function acquireRefreshLock(pool: Pool, guard: (client: PoolClient)
   }
   return {
     signal: AbortSignal.any([signal, lost.signal]),
+    async inspect(work) {
+      if (released || lost.signal.aborted) throw new SweepError("refresh_lock_lost");
+      const timeout = setTimeout(abort, 5000);
+      try {
+        await work(client);
+        if (lost.signal.aborted) throw new SweepError("refresh_lock_lost");
+      }
+      catch (error) {
+        if (signal.aborted) throw new SweepError("cancelled");
+        if (lost.signal.aborted) throw new SweepError("refresh_lock_lost");
+        throw error;
+      }
+      finally { clearTimeout(timeout); }
+    },
     async check() {
       if (released || lost.signal.aborted)
         throw new SweepError("refresh_lock_lost");

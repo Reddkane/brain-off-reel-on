@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import pg from "pg";
 import { boundedText, catalogCode, decodePassword, privateDirectory, privateJson } from "./catalog-config.ts";
 import { migrationFiles } from "../src/server/db/migration-files.ts";
@@ -22,12 +22,12 @@ export type CatalogResources = typeof retained | {
   port: number;
   label: string;
 };
-export type Docker = (args: string[], input?: string) => Promise<string>;
-export const docker: Docker = (args, input = "") => new Promise((resolve, reject) => {
+export type Docker = (args: string[], input?: string, signal?: AbortSignal) => Promise<string>;
+export const docker: Docker = (args, input = "", signal = AbortSignal.timeout(30000)) => new Promise((resolve, reject) => {
   const child = spawn("docker", args, {
     shell: false,
     windowsHide: true,
-    signal: AbortSignal.timeout(30000),
+    signal,
     stdio: ["pipe", "pipe", "pipe"]
   });
   let output = "";
@@ -300,9 +300,26 @@ export async function completedSetup(pool: pg.Pool) {
     client.release();
   }
 }
-export async function localCommand(action: string, resources: CatalogResources = retained, directory = privateDirectory, io: Docker = docker) {
-  if (!["inspect", "setup", "upgrade", "start", "stop"].includes(action))
+export async function localCommand(action: string, resources: CatalogResources = retained, directory = privateDirectory, io: Docker = docker,
+  backup?: { phase: import("./catalog-backup.ts").BackupPhase; root: string; signal: AbortSignal }) {
+  if (!["inspect", "setup", "upgrade", "start", "stop", "backup"].includes(action))
     throw new Error("invalid_action");
+  if (action === "backup" && !backup) throw new Error("invalid_arguments");
+  if (action === "backup") {
+    const { backupCatalog } = await import("./catalog-backup.ts");
+    const { repositorySha } = await import("./catalog-import.ts");
+    let password: string;
+    try { password = decodePassword(privateJson(await boundedText(`${directory}/setup.json`, 4096))); }
+    catch { throw new Error("setup_credential_failed"); }
+    const pool = catalogPool(password, resources.port, true);
+    try {
+      return await backupCatalog(backup!.phase, {
+        root: backup!.root, signal: backup!.signal, pool, sha: repositorySha,
+        inspect: signal => inspectCatalog(resources, (args, input) => io(args, input, signal)),
+      });
+    }
+    finally { await pool.end(); }
+  }
   await io(["version", "--format", "{{.Server.Version}}"]);
   const present = await io(["ps", "-a", "--filter", `name=^/${resources.container}$`, "--format", "{{.ID}}", "--no-trunc"]);
   if (!present &&
@@ -404,16 +421,34 @@ export async function localCommand(action: string, resources: CatalogResources =
     await pool.end();
   }
 }
+export async function catalogLocalDiagnostic(action: string, error: unknown) {
+  const { backupCode } = await import("./catalog-backup.ts");
+  return catalogCode(error, action === "backup" ? backupCode(error) : "catalog_local_failed_inspect_required");
+}
 if (process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const controller = new AbortController(), cancel = () => controller.abort();
+  process.on("SIGINT", cancel);
+  process.on("SIGTERM", cancel);
   try {
-    if (process.argv.length !== 3)
-      throw new Error("invalid_action");
-    const result = await localCommand(process.argv[2]);
-    console.log(result ? (result.applied ? "catalog_upgrade_applied" : "catalog_upgrade_current") : "catalog_local_ok");
+    const args = process.argv.slice(2), action = args[0];
+    const isBackup = action === "backup";
+    if (isBackup ? args.length !== 3 || args[1] !== "--phase" || !["before-upgrade", "after-upgrade"].includes(args[2]) : args.length !== 1)
+      throw new Error("invalid_arguments");
+    const root = fileURLToPath(new URL("../", import.meta.url));
+    const result = await localCommand(action, retained, `${root}/.cache/real-catalog/private`, docker,
+      isBackup ? { phase: args[2] as import("./catalog-backup.ts").BackupPhase, root, signal: controller.signal } : undefined);
+    if (result && "code" in result) {
+      console.log(JSON.stringify({ code: result.code, manifest: result.manifest, dump: result.dump, digest: result.digest, schemaState: result.schemaState }));
+    }
+    else console.log(result ? (result.applied ? "catalog_upgrade_applied" : "catalog_upgrade_current") : "catalog_local_ok");
   }
   catch (error) {
-    console.error(catalogCode(error, "catalog_local_failed_inspect_required"));
+    console.error(await catalogLocalDiagnostic(process.argv[2], error));
     process.exitCode = 1;
+  }
+  finally {
+    process.off("SIGINT", cancel);
+    process.off("SIGTERM", cancel);
   }
 }
