@@ -30,6 +30,7 @@ export function refreshDue(refreshedAt: string, now: number): boolean {
 }
 export interface SweepIO {
   readonly pool: Pool;
+  readonly preflight?: (client: PoolClient) => Promise<void>;
   readonly guard: (client: PoolClient) => Promise<void>;
   readonly watchmode: WatchmodeProvider;
   readonly metadata: MetadataProvider;
@@ -38,7 +39,7 @@ export interface SweepIO {
   readonly writeReport: (report: unknown, signal: AbortSignal) => Promise<void>;
   readonly expirePrivateFiles?: (now: number,signal: AbortSignal)=>Promise<{inspected:number;deleted:number;bounded:boolean}>;
 }
-/** Trusted composition. Production CLI remains closed pending focused review and separate authorization. */
+/** Trusted composition; operator execution requires explicit live dispatch. */
 export async function runSweeps(config: SweepConfig, io: SweepIO) {
   const id = randomUUID(), start = io.now(), deadline = start + config.limits.durationMs, workDeadline = deadline - 30000;
   const wall = new AbortController(), timer = setTimeout(() => wall.abort(), config.limits.durationMs);
@@ -220,6 +221,7 @@ export async function runSweeps(config: SweepConfig, io: SweepIO) {
     finally {
       databaseMs += performance.now() - lockStarted;
     }
+    if (io.preflight) await database(() => lock!.inspect(io.preflight!));
     if (io.expirePrivateFiles) {
       try {
         privateCleanup = await io.expirePrivateFiles(io.now(), lock.signal);

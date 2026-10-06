@@ -1,8 +1,11 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
+import { safePrivateDirectory } from "./private-directory.ts";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Pool, PoolClient } from "pg";
 import { boundedText, decodePassword, decodeTokenFile, privateJson } from "./catalog-config.ts";
+import { catalogSchemaState, currentMigrationCount } from "./catalog-schema.ts";
+import { SweepError } from "../src/server/providers/sweep-error.ts";
 import { catalogPool } from "./catalog-local.ts";
 import { readWatchmodeKey } from "./watchmode-key.ts";
 import { localCatalogGuard } from "../src/server/db/local-catalog-target.ts";
@@ -38,7 +41,14 @@ export function defaultLiveSweepIO(): LiveSweepIO {
   };
 }
 
-/** Prepared operator composition; the CLI's retained --live refusal remains closed. */
+export async function writeLiveSweepReport(root: string, report: { runId: string }, signal: AbortSignal) {
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(report.runId)) throw new SweepError("report_failed");
+  const directory = await safePrivateDirectory(root, [".cache", "availability", "private"]);
+  await writeFile(join(directory, `evidence-report-${report.runId}.json`), JSON.stringify(report, null, 2), {
+    flag: "wx", mode: 0o600, signal,
+  });
+}
+/** Explicit operator composition, with locked schema preflight before cleanup. */
 export async function liveSweepComposition(config: SweepConfig, signal: AbortSignal, io = defaultLiveSweepIO()) {
   if (!config.terms.accepted)
     throw new Error("terms_required");
@@ -48,17 +58,24 @@ export async function liveSweepComposition(config: SweepConfig, signal: AbortSig
   try {
     return await runSweeps(config, {
       pool, guard: io.guard, signal, now: io.now,
+      preflight: async client => {
+        try {
+          await client.query("BEGIN READ ONLY; SET LOCAL ROLE service_role");
+          if (await catalogSchemaState(client) !== currentMigrationCount) throw new SweepError("upgrade_required");
+          await client.query("COMMIT");
+        }
+        catch (error) {
+          await client.query("ROLLBACK").catch(() => {});
+          if (error instanceof SweepError) throw error;
+          if (error instanceof Error && error.message === "upgrade_state_unknown" && !("code" in error))
+            throw new SweepError("upgrade_state_unknown");
+          throw new SweepError("schema_preflight_failed");
+        }
+      },
       watchmode: createWatchmode(key, io.transport),
       metadata: createTmdb(token, await productionMapping(), io.transport),
       expirePrivateFiles: (now, cleanupSignal) => expirePrivateEvidence(io.root, now, cleanupSignal),
-      writeReport: async (report, reportSignal) => {
-        const directory = join(io.root, ".cache/availability/private");
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        const runId = (report as { runId: string }).runId;
-        await writeFile(join(directory, `evidence-report-${runId}.json`), JSON.stringify(report, null, 2), {
-          flag: "wx", mode: 0o600, signal: reportSignal,
-        });
-      },
+      writeReport: (report, reportSignal) => writeLiveSweepReport(io.root, report as { runId: string }, reportSignal),
     });
   }
   finally {

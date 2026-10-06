@@ -18,8 +18,8 @@ refresh lock. CI passed on the first run for `check`, `database` and
 retains implementation evidence; the approved [Availability: evidence plan](docs/plans/availability-evidence.md)
 is next and includes the readiness map against that merged baseline.
 Availability: evidence passed focused implementation review and re-review. Offers, uncertainty, arrival intervals, links, retention and retirement
-have synthetic/disposable acceptance coverage. The sweeps CLI still refuses all
-retained live runs. See the [implementation review packet](docs/plans/availability-evidence-implementation.md).
+have synthetic/disposable acceptance coverage. The sweeps CLI supports explicit `--live`; retained execution requires the separate
+Gate B authorization. See the [implementation review packet](docs/plans/availability-evidence-implementation.md).
 No hosted infrastructure or deployment has been created.
 
 See [the architecture plan](docs/architecture.md) for the product scope, data model, recommendation approach, evaluation protocol, work-area roadmap, and recommended coding models.
@@ -65,9 +65,9 @@ missing-favicon 404. It is not a PWA asset set or a generator-added starter asse
 | `npm run metadata:local -- --scenario repeat` | Synthetic metadata/ratings composition twice, inspected teardown; scenarios `metadata`, `ratings`, `repeat` only. |
 | `npm run metadata:dry-run -- --config <file> --as-of YYYY-MM-DD` | Validate explicit discovery config and print bounded batches without network/writes. |
 | `npm run ratings:dry-run -- --input <file> --as-of YYYY-MM-DD` | Validate/coalesce a TMDB seed; print counts only. Identity/state resolution needs disposable composition. |
-| `npm run availability:sweeps -- --config config/availability-sweeps.example.json` | Offline config validation; no credential reads, provider calls or database writes. The retained live gate remains closed pending the follow-up in section 9 of the evidence plan and separate authorization. |
+| `npm run availability:sweeps -- --config config/availability-sweeps.example.json` | Offline config validation; no credential reads, provider calls or database writes. Add `--live` only under separate retained authorization; schema preflight precedes cleanup and providers. |
 | `npm run test:availability:sweeps:db` | Synthetic Watchmode/TMDB composition, transactional promotion/resume, real advisory overlap/loss, cache sealing and readback against inspected disposable PostgreSQL only. |
-| `npm run availability:sweeps -- --config config/availability-evidence.example.json` | Offline validation of bounded evidence settings; the retained live gate stays closed. |
+| `npm run availability:sweeps -- --config config/availability-evidence.example.json` | Offline validation of bounded evidence settings; explicit `--live` requires separate retained authorization. |
 | `npm run test:availability:evidence:db` | Fresh replay and explicit sweeps-baseline upgrade; own-age guards, acquisition protection, cached offers/links, arrival clocks and UUID restoration on disposable PostgreSQL. |
 
 CI (`.github/workflows/ci.yml`) runs `npm ci` and `npm run check` on Node 24 for
@@ -239,9 +239,10 @@ The credential-free real-catalog composition is documented below. Auth, classifi
 recommendations, APIs, settings, PWA and deployment remain outside this implementation.
 The architecture and current plan own acceptance criteria and limitations.
 
-Availability sweeps reuse those provider/store boundaries. The explicit CLI remains
-offline pending the evidence plan's section 9 follow-up and separate retained authorization; its internal worker accepts trusted
-injected transports and a guarded, caller-owned pool for disposable validation.
+Availability sweeps reuse those provider/store boundaries. The CLI defaults offline;
+explicit `--live` dispatches the worker after terms/path validation. Schema preflight
+runs on the held refresh-lock session before cleanup or provider requests. Tests use
+synthetic transports and inspected disposable targets.
 Membership, page, terminal-event and enrichment-check rows deny UPDATE and allow
 only expired DELETE. Optional evidence settings add bounded background source checks,
 cached links, arrival derivation and private-file cleanup within the same lock,
@@ -268,6 +269,59 @@ npm run catalog:local -- stop
 npm run catalog:local -- start
 ```
 
+The [retained availability plan](docs/plans/retained-availability-live.md)
+specifies `npm run catalog:local -- backup --phase before-upgrade`, followed by
+upgrade, inspect and `npm run catalog:local -- backup --phase after-upgrade`
+before any live request. The initial state must be 3 and the post-upgrade state 5.
+Its single Gate B authorization covers those backups,
+upgrade and up to nine attached live runs with explicit report-based stop rules.
+Backup and live dispatch are implemented; this implementation does not authorize
+retained execution. See [implementation evidence](docs/plans/retained-availability-live-implementation.md).
+
+Prepare an evidence-enabled configuration inside `.cache/availability/private/`
+with the plan's unchanged per-run limits. Offline validation is inert:
+
+```powershell
+npm run availability:sweeps -- --config .cache/availability/private/config.json
+# Only after Gate B authorization, backup/upgrade checks and identity comparison:
+npm run availability:sweeps -- --config .cache/availability/private/config.json --live
+```
+
+The fixed public line is `exit=<0|1|2> code=<code> run=<uuid> pages=<n> persisted=<n>`.
+Read its exclusive `evidence-report-<uuid>.json` and apply the plan's ordered failure,
+progress and ceiling checks before another invocation. A complete rescan with no
+new canonical titles stops. One failed title source check vetoes continuation.
+`scripts/availability-batch.ts` provides read-only decision support; it never runs
+an invocation or supplies authorization. After each future authorized run, supply
+all report paths in invocation order and their recorded process exits:
+
+```powershell
+node scripts/availability-batch.ts --manifest .cache/real-catalog/private/catalog-backup-<uuid>.manifest.json --report .cache/availability/private/evidence-report-<run-1>.json --exit 2
+# For a later run, repeat --report <path> --exit <recorded-exit> for every run.
+```
+
+The command validates the successful after-upgrade manifest, converts its string
+movie count, sums runs/credits/details/TMDB attempts, and checks each decision in
+order. An earlier stop cannot be undone by later reports; totals still account
+for every supplied report. It checks distinct run IDs, chronological nonoverlap,
+unchanged generation/terms and the approved per-run limits. It never reads
+credentials, connects to a database or calls providers. Exit 0 means a valid
+`continue` or `cap` decision, exit 2 a valid `stop`, and exit 1 invalid inputs.
+These command exits do not replace the recorded worker exits or Gate B approval.
+
+`metadata_failed` from an invalid TMDB title or identity conflict also stops the
+batch. Plain `not_found` responses do not set that code; other stop rules still
+apply.
+
+Backups stream at most 64 MiB within 120 seconds from a socket-authenticated dump
+using the coordinator's exported read-only snapshot. A dump is valid only with its
+successful exclusive manifest and matching SHA-256. Both files stay outside cleanup;
+delete them when batch results are accepted, no later than six calendar months from
+the oldest metadata timestamp. A restore needs separate authorization. Failure
+invalidates this invocation's partial files. Requested POSIX modes do not verify
+Windows NTFS permissions. Ctrl+C uses SIGINT; SIGTERM shares the cancellation path,
+with no Windows delivery claim.
+
 For an existing catalog, **separate retained upgrade authorization** is required
 before running `npm run catalog:local -- upgrade`. Upgrade reads the fixed setup
 credential, verifies the owned loopback target and marker, and recognizes only the
@@ -281,7 +335,7 @@ SQL migration and inspection accepts only the current full schema.
 
 Setup uses fixed names, `127.0.0.1:55432`, unchanged migrations and a non-admin login.
 Start waits for readiness and accepts an already-running owned container; stop
-retains its volume. Missing image, collisions and partial setup refuse; plan §3
+retains its volume. Missing image, collisions and partial setup refuse; plan Â§3
 documents exact inspected, separately authorized manual disposal.
 
 Keep `.env.local` and `.cache/real-catalog/private/` owner-private. Setup generates

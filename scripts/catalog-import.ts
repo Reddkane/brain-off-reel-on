@@ -457,12 +457,14 @@ export async function catalogCommand(args: readonly string[], io: CatalogIO): Pr
     }
   }
 }
-async function repositorySha() {
+export async function repositorySha(signal?: AbortSignal) {
   // The SHA is public repository metadata; no shell or inherited git output.
   const { execFile } = await import("node:child_process");
   return new Promise<string>((resolve, reject) => execFile("git", ["rev-parse", "HEAD"], {
     windowsHide: true,
-    timeout: 5000
+    timeout: 5000,
+    cwd: new URL("../", import.meta.url),
+    signal,
   }, (error, stdout) => error ? reject(new Error("repository_sha_failed")) : resolve(stdout.trim())));
 }
 if (process.argv[1] &&
