@@ -6,6 +6,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import pg from "pg";
 import { boundedText, catalogCode, decodePassword, privateDirectory, privateJson } from "./catalog-config.ts";
 import { migrationFiles } from "../src/server/db/migration-files.ts";
+import { repositorySha } from "./repository-sha.ts";
 import { catalogSchemaState, currentMigrationCount, migrationTargetGuard } from "./catalog-schema.ts";
 import { localCatalogGuard } from "../src/server/db/local-catalog-target.ts";
 export const retained = Object.freeze({
@@ -307,7 +308,6 @@ export async function localCommand(action: string, resources: CatalogResources =
   if (action === "backup" && !backup) throw new Error("invalid_arguments");
   if (action === "backup") {
     const { backupCatalog } = await import("./catalog-backup.ts");
-    const { repositorySha } = await import("./catalog-import.ts");
     let password: string;
     try { password = decodePassword(privateJson(await boundedText(`${directory}/setup.json`, 4096))); }
     catch { throw new Error("setup_credential_failed"); }

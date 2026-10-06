@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { Pool } from "pg";
 import { boundedText, catalogCode, decodeCatalog, decodePassword, decodeProviderListing, decodeTokenFile, listingFilename, privateDirectory, privatePath, privateJson } from "./catalog-config.ts";
 import { catalogPool } from "./catalog-local.ts";
+import { repositorySha } from "./repository-sha.ts";
 import { localCatalogGuard, readCatalog } from "../src/server/db/local-catalog-target.ts";
 import { acquireRefreshLock } from "../src/server/db/refresh-lock.ts";
 import { createPgStore } from "../src/server/db/pg-store.ts";
@@ -456,16 +457,6 @@ export async function catalogCommand(args: readonly string[], io: CatalogIO): Pr
         clearTimeout(timer);
     }
   }
-}
-export async function repositorySha(signal?: AbortSignal) {
-  // The SHA is public repository metadata; no shell or inherited git output.
-  const { execFile } = await import("node:child_process");
-  return new Promise<string>((resolve, reject) => execFile("git", ["rev-parse", "HEAD"], {
-    windowsHide: true,
-    timeout: 5000,
-    cwd: new URL("../", import.meta.url),
-    signal,
-  }, (error, stdout) => error ? reject(new Error("repository_sha_failed")) : resolve(stdout.trim())));
 }
 if (process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href) {
