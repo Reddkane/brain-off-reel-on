@@ -282,13 +282,12 @@ checks all four mappings under the refresh lock before cleanup or spending;
 `provider_mapping_missing` stops with zero provider calls.
 Its single Gate B authorization covers those backups,
 upgrade and up to nine attached live runs with explicit report-based stop rules.
-Run 1 completed 30 pages and enriched 100 titles, then failed its first source
-check because the mappings were absent; it used one run and 31 credits. After
-merge and separate authorization, the next sequence is state-5 backup, upgrade,
-inspect, state-6 backup, then resumed runs. The user decides the remaining allowed
-run count; caps and per-run limits are unchanged. The backup's acquisition check
-requires every identity mapping to have recorded provenance, so run 1's Watchmode
-identities and membership acquisitions are accepted.
+The batch ran on 2026-10-06/07 and is closed: six runs, 271 credits, 700 active
+titles, stopped by user decision after a Netflix `pagination_drift`. See
+[results](docs/plans/retained-availability-live.md#10-results-2026-10-0607) for
+per-run spend, evidence and link readiness (99 of 700). The backup's acquisition
+check requires every identity mapping to have recorded provenance, so live-sweep
+Watchmode identities and membership acquisitions are accepted.
 Backup and live dispatch are implemented; this implementation does not authorize
 retained execution. See [implementation evidence](docs/plans/retained-availability-live-implementation.md).
 
