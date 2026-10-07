@@ -6,7 +6,7 @@ import { join, basename, dirname } from "node:path";
 import { Transform, type Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { Pool, PoolClient } from "pg";
-import { catalogSchemaState, migrationTargetGuard } from "./catalog-schema.ts";
+import { catalogSchemaState, currentMigrationCount, migrationTargetGuard, providerCacheTables } from "./catalog-schema.ts";
 import { boundedText, privateJson } from "./catalog-config.ts";
 import { safePrivateDirectory } from "./private-directory.ts";
 import { calendarMonths } from "../src/domain/availability-evidence.ts";
@@ -28,13 +28,26 @@ export const identityDigestSql = `SELECT
   (SELECT count(*) FROM app.selection_sessions) AS selection_sessions,
   (SELECT count(*) FROM app.recommendations) AS recommendations,
   (SELECT count(*) FROM app.feedback_events) AS feedback_events`;
-export const acquisitionSql = `SELECT
-  (SELECT count(*) FROM app.movie_external_ids e JOIN app.movies m ON m.id=e.movie_id
-    WHERE (SELECT count(*) FROM app.movie_external_id_acquisitions a
-      WHERE a.movie_id=e.movie_id AND a.source=e.source AND a.acquisition_path='tmdb_metadata'
-        AND a.acquired_at=m.metadata_refreshed_at) <> 1) AS acquisition_mismatches,
-  (SELECT count(*) FROM app.movie_external_id_acquisitions a JOIN app.movies m ON m.id=a.movie_id
-    WHERE a.acquisition_path<>'tmdb_metadata' OR a.acquired_at<>m.metadata_refreshed_at) AS unexpected_acquisitions`;
+// Provenance completeness holds for any catalog age; live sweeps add Watchmode-path rows.
+export const acquisitionSql = `SELECT count(*) AS mappings_without_acquisition
+  FROM app.movie_external_ids e
+  WHERE NOT EXISTS (SELECT 1 FROM app.movie_external_id_acquisitions a
+    WHERE a.movie_id=e.movie_id AND a.source=e.source)`;
+// Watchmode-governed tables are exactly those bound to guard_provider_cache(<age column>).
+const providerCacheBindingsSql = `SELECT c.relname AS table_name, split_part(encode(t.tgargs,'escape'),'\\000',1) AS age_column
+  FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+  JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace
+  WHERE n.nspname='app' AND pn.nspname='app' AND p.proname='guard_provider_cache' AND NOT t.tgisinternal
+  ORDER BY 1,2`;
+const microseconds = `'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'`;
+export interface WatchmodeSourceAge { readonly oldest: string | null; readonly windowSeconds: number }
+/** The earliest source-age deadline: TMDB six calendar months, Watchmode its policy window. */
+export function backupRetentionDeadline(tmdbOldest: string | null, watchmode: WatchmodeSourceAge | null): string | null {
+  const deadlines: number[] = [];
+  if (tmdbOldest) deadlines.push(calendarMonths(Date.parse(tmdbOldest), 6));
+  if (watchmode?.oldest) deadlines.push(Date.parse(watchmode.oldest) + watchmode.windowSeconds * 1000);
+  return deadlines.length ? new Date(Math.min(...deadlines)).toISOString() : null;
+}
 export type BackupPhase = "before-upgrade" | "after-upgrade";
 export interface BackupIO {
   readonly root: string;
@@ -60,7 +73,7 @@ export function sameIdentity(before: unknown, after: unknown): boolean {
 }
 const backupCodes = new Set(["backup_phase_invalid", "backup_phase_mismatch", "backup_deadline", "backup_cancelled",
   "backup_size_limit", "backup_dump_failed", "backup_archive_invalid", "backup_manifest_invalid", "backup_lock_lost", "backup_file_exists",
-  "backup_retention_expired", "backup_acquisition_failed", "backup_cleanup_failed", "backup_failed",
+  "backup_retention_expired", "backup_retention_unknown", "backup_acquisition_failed", "backup_cleanup_failed", "backup_failed",
   "refresh_overlap", "target_guard", "upgrade_state_unknown", "private_path_required", "repository_sha_failed"]);
 export function backupCode(error: unknown) {
   return error instanceof Error && backupCodes.has(error.message) ? error.message : "backup_failed";
@@ -81,7 +94,7 @@ export async function verifyBackup(dump: string, manifestPath: string, signal: A
   const value = manifest as Record<string, unknown>;
   const expectedId = name.slice("catalog-backup-".length, -".dump".length);
   if (value.id !== expectedId || !["before-upgrade", "after-upgrade"].includes(String(value.phase)) ||
-    value.schemaState !== (value.phase === "before-upgrade" ? 3 : 5) ||
+    (value.phase === "before-upgrade" ? ![3, 4, 5].includes(Number(value.schemaState)) || typeof value.schemaState !== "number" : value.schemaState !== currentMigrationCount) ||
     typeof value.sha !== "string" || !/^[a-f0-9]{40}$/.test(value.sha) ||
     typeof value.createdAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value.createdAt) ||
     !Number.isFinite(Date.parse(value.createdAt)) || !value.digest || typeof value.digest !== "object") throw new Error("backup_manifest_invalid");
@@ -93,14 +106,25 @@ export async function verifyBackup(dump: string, manifestPath: string, signal: A
   const oldest = digest.oldest_metadata_refreshed_at;
   if (oldest !== null && (typeof oldest !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(oldest) ||
     !Number.isFinite(Date.parse(oldest)))) throw new Error("backup_manifest_invalid");
-  if ((digest.movies === "0") !== (oldest === null) || value.retentionDeadline !== (oldest === null ? null :
-    new Date(calendarMonths(Date.parse(String(oldest)), 6)).toISOString())) throw new Error("backup_manifest_invalid");
-  if (value.phase === "before-upgrade") {
+  const age = value.watchmodeSourceAge;
+  let watchmode: WatchmodeSourceAge | null = null;
+  if (Number(value.schemaState) >= 5) {
+    if (!age || typeof age !== "object") throw new Error("backup_manifest_invalid");
+    const ageOldest = Reflect.get(age, "oldest"), windowSeconds = Reflect.get(age, "windowSeconds");
+    if ((ageOldest !== null && (typeof ageOldest !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(ageOldest) ||
+      !Number.isFinite(Date.parse(ageOldest)))) || !Number.isSafeInteger(windowSeconds) || windowSeconds < 1 || windowSeconds > 30 * 86400)
+      throw new Error("backup_manifest_invalid");
+    watchmode = { oldest: ageOldest, windowSeconds };
+  }
+  else if (age !== null) throw new Error("backup_manifest_invalid");
+  if ((digest.movies === "0") !== (oldest === null) ||
+    value.retentionDeadline !== backupRetentionDeadline(oldest as string | null, watchmode)) throw new Error("backup_manifest_invalid");
+  if (Number(value.schemaState) < 5) {
     if (value.acquisition !== null) throw new Error("backup_manifest_invalid");
   }
   else {
     if (!value.acquisition || typeof value.acquisition !== "object" ||
-      Reflect.get(value.acquisition, "acquisition_mismatches") !== "0" || Reflect.get(value.acquisition, "unexpected_acquisitions") !== "0")
+      Reflect.get(value.acquisition, "mappings_without_acquisition") !== "0")
       throw new Error("backup_manifest_invalid");
   }
   const hash = createHash("sha256");
@@ -182,15 +206,33 @@ export async function backupCatalog(phase: BackupPhase, io: BackupIO) {
     await query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL TIME ZONE 'UTC'; SET LOCAL statement_timeout='5s'");
     await abortable(migrationTargetGuard(client));
     const state = await abortable(catalogSchemaState(client));
-    if (state !== (phase === "before-upgrade" ? 3 : 5)) throw new Error("backup_phase_mismatch");
+    if (phase === "before-upgrade" ? state === currentMigrationCount : state !== currentMigrationCount) throw new Error("backup_phase_mismatch");
     const snapshot = (await query("SELECT pg_export_snapshot() AS snapshot")).rows[0].snapshot;
     if (!/^[A-Fa-f0-9]+-[A-Fa-f0-9]+-[0-9]+$/.test(snapshot)) throw new Error("backup_failed");
     const digest = (await query(identityDigestSql)).rows[0];
-    const acquisition = state === 5 ? (await query(acquisitionSql)).rows[0] : null;
-    if (acquisition && (acquisition.acquisition_mismatches !== "0" || acquisition.unexpected_acquisitions !== "0"))
+    const acquisition = state >= 5 ? (await query(acquisitionSql)).rows[0] : null;
+    if (acquisition && acquisition.mappings_without_acquisition !== "0")
       throw new Error("backup_acquisition_failed");
+    let watchmodeSourceAge: WatchmodeSourceAge | null = null;
+    if (state >= 5) {
+      const bindings = (await query(providerCacheBindingsSql)).rows as { table_name: string; age_column: string }[];
+      if (!bindings.length || bindings.some(b => !/^[a-z_]+$/.test(b.table_name) || !/^[a-z_]+$/.test(b.age_column)))
+        throw new Error("backup_retention_unknown");
+      const ages = [...bindings.map(b => `SELECT min("${b.age_column}") AS age FROM app."${b.table_name}"`),
+        "SELECT min(acquired_at) AS age FROM app.movie_external_id_acquisitions WHERE acquisition_path='watchmode_membership'"];
+      const row = (await query(`SELECT to_char(min(age) AT TIME ZONE 'UTC', ${microseconds}) AS oldest,
+        (SELECT extract(epoch FROM watchmode_window)::int FROM app.provider_retention_policy WHERE singleton) AS window_seconds
+        FROM (${ages.join(" UNION ALL ")}) ages`)).rows[0];
+      if (!Number.isSafeInteger(row?.window_seconds) || row.window_seconds < 1) throw new Error("backup_retention_unknown");
+      watchmodeSourceAge = { oldest: row.oldest, windowSeconds: row.window_seconds };
+    }
+    else {
+      // Before state 5 there is no migration-owned retention window, so any provider-cache row is unclassifiable.
+      const cached = providerCacheTables(state).map(table => `EXISTS (SELECT 1 FROM app."${table}")`).join(" OR ");
+      if ((await query(`SELECT (${cached}) AS cached`)).rows[0].cached) throw new Error("backup_retention_unknown");
+    }
     const oldest = digest.oldest_metadata_refreshed_at;
-    const retentionDeadline = oldest ? new Date(calendarMonths(Date.parse(oldest), 6)).toISOString() : null;
+    const retentionDeadline = backupRetentionDeadline(oldest, watchmodeSourceAge);
     if (retentionDeadline && began > Date.parse(retentionDeadline)) throw new Error("backup_retention_expired");
     const sha = await abortable(io.sha(signal));
     if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("repository_sha_failed");
@@ -230,7 +272,7 @@ export async function backupCatalog(phase: BackupPhase, io: BackupIO) {
       AND locktype='advisory' AND classid=1112494674 AND objid=1 AND objsubid=2 AND granted) AS held`)).rows[0].held)
       throw new Error("backup_lock_lost");
     const manifest = { success: true, id, phase, schemaState: state, sha, createdAt: new Date(began).toISOString(),
-      bytes, sha256: hash.digest("hex"), digest, acquisition, retentionDeadline };
+      bytes, sha256: hash.digest("hex"), digest, acquisition, watchmodeSourceAge, retentionDeadline };
     check();
     const output = await open(manifestPath, "wx", 0o600);
     manifestOwned = true;

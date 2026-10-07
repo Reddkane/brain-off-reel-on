@@ -1,4 +1,5 @@
 // Isolated synthetic resources only. This file alone owns destructive cleanup.
+import { operatorCopy } from "./operator-process.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
@@ -93,7 +94,41 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
     await t.test("fresh setup reaches the evidence inventory", async () => {
       const tables = (await admin.query("SELECT tablename FROM pg_tables WHERE schemaname='app' ORDER BY tablename")).rows;
       assert.deepEqual(tables.map(row => row.tablename), currentTables);
+      const client = await admin.connect();
+      try { assert.equal(await catalogSchemaState(client), 6); }
+      finally { client.release(); }
+      assert.deepEqual((await admin.query(`SELECT p.display_name,e.external_id FROM app.streaming_providers p
+        JOIN app.streaming_provider_external_ids e ON e.provider_id=p.id WHERE e.source='watchmode' ORDER BY e.external_id`)).rows,
+        [{ display_name: "Hulu", external_id: "157" }, { display_name: "Netflix", external_id: "203" },
+          { display_name: "Disney+", external_id: "372" }, { display_name: "HBO Max", external_id: "387" }]);
       assert.deepEqual(await upgradeSchema(admin), { applied: 0, current: true });
+    });
+    await t.test("seed mappings deny update, delete and provider cascade for owner and service role", async () => {
+      for (const role of ["postgres", "service_role"]) {
+        const client = await admin.connect();
+        try {
+          for (const sql of [
+            "UPDATE app.streaming_provider_external_ids SET external_id='999' WHERE source='watchmode' AND external_id='203'",
+            "DELETE FROM app.streaming_provider_external_ids WHERE source='watchmode' AND external_id='203'",
+            "DELETE FROM app.streaming_providers WHERE id=(SELECT provider_id FROM app.streaming_provider_external_ids WHERE source='watchmode' AND external_id='203')",
+          ]) {
+            await client.query(`BEGIN; SET LOCAL ROLE ${role}`);
+            await assert.rejects(client.query(sql), { code: "23514" });
+            await client.query("ROLLBACK");
+          }
+          // A non-Watchmode mapping cannot be rewritten into the Watchmode namespace either.
+          // A provider with no Watchmode mapping: without the guard this UPDATE would succeed.
+          await client.query(`BEGIN; INSERT INTO app.streaming_providers(id,display_name) VALUES('10000000-0000-4000-8000-0000000000ac','Synthetic unmapped provider');
+            INSERT INTO app.streaming_provider_external_ids VALUES('10000000-0000-4000-8000-0000000000ac','synthetic_source','8');
+            SET LOCAL ROLE ${role}`);
+          await assert.rejects(client.query("UPDATE app.streaming_provider_external_ids SET source='watchmode',external_id='440' WHERE source='synthetic_source'"), { code: "23514" });
+          await client.query("ROLLBACK");
+          assert.equal((await client.query(`SELECT has_function_privilege('anon','app.guard_watchmode_provider_mapping()','EXECUTE') OR
+            has_function_privilege('authenticated','app.guard_watchmode_provider_mapping()','EXECUTE') OR
+            has_function_privilege('service_role','app.guard_watchmode_provider_mapping()','EXECUTE') AS allowed`)).rows[0].allowed, false);
+        }
+        finally { await client.query("ROLLBACK"); client.release(); }
+      }
     });
     const runtime = pool();
     await completedSetup(runtime);
@@ -377,19 +412,78 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
       }
     };
     const args = ["--config", ".cache/real-catalog/private/synthetic.json", "--as-of", "2026-10-03", "--live"];
+    await t.test("conflicting Watchmode identity rolls migration back to complete state 5", async () => {
+      await admin.query("DROP SCHEMA app CASCADE");
+      for (const file of (await migrationFiles()).slice(0, 5))
+        await admin.query(await readFile(new URL(`../../supabase/migrations/${file}`, import.meta.url), "utf8"));
+      await admin.query(`INSERT INTO app.streaming_providers(id,display_name) VALUES('10000000-0000-4000-8000-000000000088','Synthetic conflicting provider');
+        INSERT INTO app.streaming_provider_external_ids VALUES('10000000-0000-4000-8000-000000000088','watchmode','203')`);
+      await assert.rejects(upgradeSchema(admin), /upgrade_failed_inspect_required/);
+      const client = await admin.connect();
+      try { assert.equal(await catalogSchemaState(client), 5); }
+      finally { client.release(); }
+      assert.equal((await admin.query("SELECT count(*)::int n FROM app.streaming_providers")).rows[0].n, 1);
+      assert.equal((await admin.query("SELECT count(*)::int n FROM pg_proc WHERE proname='guard_watchmode_provider_mapping'")).rows[0].n, 0);
+    });
     await t.test("original and sweeps upgrades refuse import, backfill, and repeat without replay", async upgradeTest => {
-      for (const baseline of [3, 4]) await upgradeTest.test(`${baseline}-migration starting state`, async baselineTest => {
+      for (const baseline of [3, 4, 5]) await upgradeTest.test(`${baseline}-migration starting state`, async baselineTest => {
         await admin.query("DROP SCHEMA app CASCADE");
-        for (const file of (await migrationFiles()).slice(0, baseline))
+        for (const file of (await migrationFiles()).slice(0, Math.min(baseline, 4)))
           await admin.query(await readFile(new URL(`../../supabase/migrations/${file}`, import.meta.url), "utf8"));
         await admin.query(`INSERT INTO app.movies(id,title,metadata_source,metadata_refreshed_at)
           VALUES ('10000000-0000-4000-8000-000000000099','Invented legacy movie','tmdb','2026-09-01T12:00:00Z');
           INSERT INTO app.movie_external_ids
           VALUES ('10000000-0000-4000-8000-000000000099','tmdb','999099')`);
+        if (baseline === 5) await admin.query(await readFile(new URL(`../../supabase/migrations/${(await migrationFiles())[4]}`, import.meta.url), "utf8"));
+        if (baseline === 5) await baselineTest.test("real backup, upgrade and inspect processes transition 5 to 6", async () => {
+          const copy = await operatorCopy();
+          try {
+            const entry = join(copy.root, "scripts/catalog-local.ts");
+            const source = (await readFile(entry, "utf8")).replaceAll("\r\n", "\n");
+            // Redirect fixed names only in this credential-free test copy, never production.
+            const target = /export const retained = Object.freeze\(\{[\s\S]*?\}\);/;
+            assert(target.test(source), "test target redirection must match before launching any process");
+            await writeFile(entry, source.replace(target,
+              `export const retained = Object.freeze(${JSON.stringify(resources)});`));
+            const directory = join(copy.root, ".cache/real-catalog/private");
+            await mkdir(directory, { recursive: true });
+            await writeFile(join(directory, "setup.json"), JSON.stringify({ password: adminPassword }));
+            await writeFile(join(directory, "runtime.json"), JSON.stringify({ password: runtimePassword }));
+            const before = await copy.run("catalog-local.ts", ["backup", "--phase", "before-upgrade"]);
+            assert.equal(before.code, 0, before.stderr);
+            const digest = JSON.parse(before.stdout).digest;
+            assert.equal(JSON.parse(before.stdout).schemaState, 5);
+            assert.equal((await copy.run("catalog-local.ts", ["backup", "--phase", "after-upgrade"])).stderr.trim(), "backup_phase_mismatch");
+            const upgrade = await copy.run("catalog-local.ts", ["upgrade"]);
+            assert.equal(upgrade.code, 0, upgrade.stderr);
+            assert.equal(upgrade.stdout.trim(), "catalog_upgrade_applied");
+            const inspect = await copy.run("catalog-local.ts", ["inspect"]);
+            assert.equal(inspect.code, 0, inspect.stderr);
+            const after = await copy.run("catalog-local.ts", ["backup", "--phase", "after-upgrade"]);
+            assert.equal(after.code, 0, after.stderr);
+            assert.equal(JSON.parse(after.stdout).schemaState, 6);
+            assert(sameIdentity(digest, JSON.parse(after.stdout).digest));
+            const mismatch = await copy.run("catalog-local.ts", ["backup", "--phase", "before-upgrade"]);
+            assert.equal(mismatch.code, 1);
+            assert.equal(mismatch.stderr.trim(), "backup_phase_mismatch");
+            assert.equal((await copy.run("catalog-local.ts", ["upgrade"])).stdout.trim(), "catalog_upgrade_current");
+          }
+          finally { await copy.cleanup(); }
+          // Restore the same owned state 5 so the imported operator acceptance runs too.
+          await admin.query("DROP SCHEMA app CASCADE");
+          for (const file of (await migrationFiles()).slice(0, 4))
+            await admin.query(await readFile(new URL(`../../supabase/migrations/${file}`, import.meta.url), "utf8"));
+          await admin.query(`INSERT INTO app.movies(id,title,metadata_source,metadata_refreshed_at)
+            VALUES ('10000000-0000-4000-8000-000000000099','Invented legacy movie','tmdb','2026-09-01T12:00:00Z');
+            INSERT INTO app.movie_external_ids VALUES ('10000000-0000-4000-8000-000000000099','tmdb','999099')`);
+          await admin.query(await readFile(new URL(`../../supabase/migrations/${(await migrationFiles())[4]}`, import.meta.url), "utf8"));
+        });
         fetchCalls = 0;
         await assert.rejects(completedSetup(runtime), /^Error: upgrade_required$/);
-        assert.equal(await catalogCommand(args, io), 1);
-        assert.equal(fetchCalls, 0);
+        if (baseline < 5) {
+          assert.equal(await catalogCommand(args, io), 1);
+          assert.equal(fetchCalls, 0);
+        }
         await admin.query("CREATE TABLE app.unknown_state(id integer)");
         await assert.rejects(upgradeSchema(admin), /upgrade_state_unknown/);
         await admin.query("DROP TABLE app.unknown_state");
@@ -399,11 +493,7 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
           await mkdir(directory, { recursive: true });
           await writeFile(join(directory, "setup.json"), JSON.stringify({ password: adminPassword }));
           const runBackup = (phase: "before-upgrade" | "after-upgrade") => localCommand("backup", resources, directory, docker, { phase, root, signal: controller.signal });
-          if (baseline === 4) {
-            await assert.rejects(runBackup("before-upgrade"), /backup_phase_mismatch/);
-            assert.deepEqual(await readdir(directory), ["setup.json"]);
-          }
-          else {
+          {
             await admin.query("CREATE TABLE app.synthetic_backup_unknown(id integer)");
             try { await assert.rejects(runBackup("before-upgrade"), /upgrade_state_unknown/); }
             finally { await admin.query("DROP TABLE app.synthetic_backup_unknown"); }
@@ -413,6 +503,33 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
               sha: async () => "446f78f05f53ce08f296766c5c66b5d52065d296", inspect: () => inspectCatalog(resources, docker, id),
             }), /target_guard/);
             assert.deepEqual(await readdir(directory), ["setup.json"]);
+            if (baseline === 4) await baselineTest.test("state-4 backup refuses any provider-cache row without a retention policy before dump creation", async () => {
+              // A sweep row, and a detail attempt that exists independently of any sweep.
+              for (const [table, insert, key] of [
+                ["watchmode_sweeps", "INSERT INTO app.watchmode_sweeps VALUES('10000000-0000-4000-8000-0000000000aa','10000000-0000-4000-8000-0000000000ab',203,'us-direct-v1',statement_timestamp())", "id='10000000-0000-4000-8000-0000000000aa'"],
+                ["metadata_detail_attempts", "INSERT INTO app.metadata_detail_attempts VALUES('987654','failed','2020-01-01T00:00:00Z')", "tmdb_id='987654'"],
+              ]) {
+                const names = await readdir(directory);
+                await admin.query(insert);
+                try {
+                  await assert.rejects(runBackup("before-upgrade"), /backup_retention_unknown/, table);
+                  assert.deepEqual(await readdir(directory), names);
+                }
+                finally {
+                  await admin.query(`ALTER TABLE app.${table} DISABLE TRIGGER USER; DELETE FROM app.${table} WHERE ${key};
+                    ALTER TABLE app.${table} ENABLE TRIGGER USER`);
+                }
+              }
+            });
+            if (baseline === 5) await baselineTest.test("state-5 backup refuses an identity mapping without acquisition provenance before dump creation", async () => {
+              const names = await readdir(directory);
+              await admin.query("INSERT INTO app.movie_external_ids VALUES('10000000-0000-4000-8000-000000000099','synthetic_unprovenanced','x')");
+              try {
+                await assert.rejects(runBackup("before-upgrade"), /backup_acquisition_failed/);
+                assert.deepEqual(await readdir(directory), names);
+              }
+              finally { await admin.query("DELETE FROM app.movie_external_ids WHERE source='synthetic_unprovenanced'"); }
+            });
             const before = await runBackup("before-upgrade");
             assert(before && "digest" in before);
             const archive = await readFile(before.dump);
@@ -477,8 +594,16 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
               const manifest = JSON.parse(await readFile(copy.manifest, "utf8"));
               await writeFile(copy.manifest, JSON.stringify({ ...manifest, sha256: "0".repeat(64) }));
               await assert.rejects(verifyBackup(copy.dump, copy.manifest, controller.signal), /backup_manifest_invalid/);
-              await writeFile(copy.manifest, JSON.stringify({ ...manifest, schemaState: 4 }));
+              await writeFile(copy.manifest, JSON.stringify({ ...manifest, schemaState: currentMigrationCount }));
               await assert.rejects(verifyBackup(copy.dump, copy.manifest, controller.signal), /backup_manifest_invalid/);
+              // States without the retention policy record no Watchmode age; state 5 records the policy window.
+              const policyAge = { oldest: null, windowSeconds: 30 * 86400 };
+              assert.deepEqual(manifest.watchmodeSourceAge, manifest.schemaState >= 5 ? policyAge : null);
+              for (const tampered of [{ ...manifest, retentionDeadline: "2099-01-01T00:00:00.000Z" },
+                { ...manifest, watchmodeSourceAge: manifest.schemaState >= 5 ? null : policyAge }]) {
+                await writeFile(copy.manifest, JSON.stringify(tampered));
+                await assert.rejects(verifyBackup(copy.dump, copy.manifest, controller.signal), /backup_manifest_invalid/);
+              }
               await writeFile(copy.manifest, JSON.stringify(manifest));
               await unlink(copy.dump); await unlink(copy.manifest);
             });
@@ -531,7 +656,75 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
             const after = await runBackup("after-upgrade");
             assert(after && "digest" in after);
             assert(sameIdentity(before.digest, after.digest));
-            assert.deepEqual(after.acquisition, { acquisition_mismatches: "0", unexpected_acquisitions: "0" });
+            assert.deepEqual(after.acquisition, { mappings_without_acquisition: "0" });
+            const sweptRows = (acquiredAt: string) => admin.query(`INSERT INTO app.movie_external_ids VALUES('10000000-0000-4000-8000-000000000099','watchmode','9999999');
+              INSERT INTO app.movie_external_id_acquisitions VALUES
+                ('10000000-0000-4000-8000-000000000099','watchmode','watchmode_membership',${acquiredAt}),
+                ('10000000-0000-4000-8000-000000000099','tmdb','watchmode_membership',${acquiredAt})`);
+            // Retained provenance cannot be deleted through the guard; the disposable owner bypasses it for teardown.
+            const removeSweptRows = () => admin.query(`ALTER TABLE app.movie_external_id_acquisitions DISABLE TRIGGER USER;
+              DELETE FROM app.movie_external_id_acquisitions WHERE acquisition_path='watchmode_membership';
+              ALTER TABLE app.movie_external_id_acquisitions ENABLE TRIGGER USER;
+              DELETE FROM app.movie_external_ids WHERE source='watchmode' AND external_id='9999999'`);
+            await baselineTest.test("state-6 backup accepts live-sweep identities and dates its deadline by the Watchmode window", async () => {
+              await sweptRows("date_trunc('second', statement_timestamp()) - interval '1 day'");
+              try {
+                const expected = (await admin.query(`SELECT to_char((min(acquired_at) + interval '30 days') AT TIME ZONE 'UTC',
+                  'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS deadline FROM app.movie_external_id_acquisitions WHERE acquisition_path='watchmode_membership'`)).rows[0].deadline;
+                const swept = await runBackup("after-upgrade");
+                assert(swept && "acquisition" in swept);
+                assert.deepEqual(swept.acquisition, { mappings_without_acquisition: "0" });
+                assert.equal(swept.watchmodeSourceAge?.windowSeconds, 30 * 86400);
+                assert.equal(swept.retentionDeadline, expected, "Watchmode data must set the earlier 30-day deadline");
+                assert(Date.parse(String(swept.retentionDeadline)) < Date.parse(String(after.retentionDeadline)));
+                await verifyBackup(swept.dump, swept.manifest, controller.signal);
+                const manifest = JSON.parse(await readFile(swept.manifest, "utf8"));
+                for (const tampered of [{ ...manifest, retentionDeadline: after.retentionDeadline },
+                  { ...manifest, watchmodeSourceAge: { ...manifest.watchmodeSourceAge, windowSeconds: 86400 } },
+                  { ...manifest, watchmodeSourceAge: null }]) {
+                  await writeFile(swept.manifest, JSON.stringify(tampered));
+                  await assert.rejects(verifyBackup(swept.dump, swept.manifest, controller.signal), /backup_manifest_invalid/);
+                }
+                await writeFile(swept.manifest, JSON.stringify(manifest));
+              }
+              finally { await removeSweptRows(); }
+            });
+            await baselineTest.test("state-6 deadline follows an older trigger-bound cache row over newer acquisitions", async () => {
+              await sweptRows("date_trunc('second', statement_timestamp()) - interval '1 day'");
+              await admin.query("INSERT INTO app.metadata_detail_attempts VALUES('987654','failed',date_trunc('second', statement_timestamp()) - interval '2 days')");
+              try {
+                const expected = (await admin.query(`SELECT to_char((checked_at + interval '30 days') AT TIME ZONE 'UTC',
+                  'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS deadline FROM app.metadata_detail_attempts WHERE tmdb_id='987654'`)).rows[0].deadline;
+                const swept = await runBackup("after-upgrade");
+                assert(swept && "retentionDeadline" in swept);
+                assert.equal(swept.retentionDeadline, expected, "the oldest guarded cache row sets the deadline");
+                await verifyBackup(swept.dump, swept.manifest, controller.signal);
+              }
+              finally {
+                await removeSweptRows();
+                await admin.query(`ALTER TABLE app.metadata_detail_attempts DISABLE TRIGGER USER;
+                  DELETE FROM app.metadata_detail_attempts WHERE tmdb_id='987654';
+                  ALTER TABLE app.metadata_detail_attempts ENABLE TRIGGER USER`);
+              }
+            });
+            await baselineTest.test("state-6 backup refuses Watchmode data already past its window before dump creation", async () => {
+              const names = await readdir(directory);
+              await sweptRows("'2020-01-01T00:00:00Z'");
+              try {
+                await assert.rejects(runBackup("after-upgrade"), /backup_retention_expired/);
+                assert.deepEqual(await readdir(directory), names);
+              }
+              finally { await removeSweptRows(); }
+            });
+            await baselineTest.test("state-6 backup refuses an identity mapping without acquisition provenance before dump creation", async () => {
+              const names = await readdir(directory);
+              await admin.query("INSERT INTO app.movie_external_ids VALUES('10000000-0000-4000-8000-000000000099','synthetic_unprovenanced','x')");
+              try {
+                await assert.rejects(runBackup("after-upgrade"), /backup_acquisition_failed/);
+                assert.deepEqual(await readdir(directory), names);
+              }
+              finally { await admin.query("DELETE FROM app.movie_external_ids WHERE source='synthetic_unprovenanced'"); }
+            });
             await assert.rejects(runBackup("before-upgrade"), /backup_phase_mismatch/);
             const names = await readdir(directory);
             for (const name of names.filter(n => n.startsWith("catalog-backup-")))
@@ -541,7 +734,7 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
           }
         }
         finally { await rm(root, { recursive: true, force: true }); await assert.rejects(access(root)); }
-        assert.deepEqual(await upgradeSchema(admin), { applied: baseline === 3 ? 0 : 5 - baseline, current: true });
+        assert.deepEqual(await upgradeSchema(admin), { applied: 0, current: true });
         await completedSetup(runtime);
         const acquisitions = (await admin.query("SELECT acquisition_path, acquired_at FROM app.movie_external_id_acquisitions")).rows;
         assert.equal(acquisitions.length, 1);
@@ -560,6 +753,7 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
         VALUES ('10000000-0000-4000-8000-000000000099','Invented legacy movie','tmdb','2026-09-01T12:00:00Z');
         INSERT INTO app.movie_external_ids
         VALUES ('10000000-0000-4000-8000-000000000099','tmdb','999099')`);
+
       await admin.query(`CREATE FUNCTION public.synthetic_migration_failure() RETURNS event_trigger
         LANGUAGE plpgsql AS $$ BEGIN
           IF position('provider_retention_policy' in current_query()) > 0 THEN
@@ -580,7 +774,7 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
       finally {
         await admin.query("DROP EVENT TRIGGER synthetic_upgrade_failure; DROP FUNCTION public.synthetic_migration_failure()");
       }
-      assert.deepEqual(await upgradeSchema(admin), { applied: 1, current: true });
+      assert.deepEqual(await upgradeSchema(admin), { applied: currentMigrationCount - 4, current: true });
       await completedSetup(runtime);
       assert.equal(await catalogCommand(args, io), 0);
       reports.length = 0;
@@ -604,7 +798,10 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
       assert.deepEqual(after.mappings, before.mappings);
       assert.deepEqual(after.credits, before.credits);
       assert.equal(after.movies[0].id, before.movies[0].id);
-      assert(Object.values(after.excluded).every(n => n === 0));
+      assert.deepEqual(after.excluded, before.excluded);
+      assert.equal(after.excluded.providers, 4);
+      assert.equal(after.excluded.provider_mappings, 4);
+      assert(Object.entries(after.excluded).every(([key, n]) => ["providers", "provider_mappings"].includes(key) || n === 0));
       assert.equal(reports.length, 2);
       assert(fetchCalls > 0);
       assert(!output.join("\n").includes("invented-token-sentinel"));

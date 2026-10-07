@@ -15,6 +15,7 @@ const cases = [
   {
     name: "state_check_removed",
     file: "scripts/catalog-local.ts",
+    // State 3 deliberately forces replay at every later inventory, including state 6.
     mutate: (source: string) => source.replace("const state = await catalogSchemaState(client);", "const state = 3;"),
     test: "tests/db/catalog.test.ts",
   },

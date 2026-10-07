@@ -63,7 +63,7 @@ describe("retained batch manual decision contract", () => {
 
 
 describe("read-only operator batch command", () => {
-  const manifest = { success: true, phase: "after-upgrade", schemaState: 5, digest: { movies: "100" }, acquisition: { acquisition_mismatches: "0", unexpected_acquisitions: "0" } };
+  const manifest = { success: true, phase: "after-upgrade", schemaState: 6, digest: { movies: "100" }, acquisition: { mappings_without_acquisition: "0" } };
   function wire(run: number, active: number) {
     const value = report("detail_budget", active);
     return { ...value, version: "availability-sweeps-v1", generation: "synthetic-batch", terms: { accepted: true },
@@ -115,7 +115,7 @@ describe("read-only operator batch command", () => {
     }
   });
   it("rejects malformed or wrong-phase manifests without printing private input", async () => {
-    for (const backup of [{ ...manifest, phase: "before-upgrade" }, { ...manifest, digest: { movies: "01" } }, { ...manifest, success: false }, { ...manifest, acquisition: { acquisition_mismatches: "1", unexpected_acquisitions: "0" } }])
+    for (const backup of [{ ...manifest, schemaState: 5 }, { ...manifest, phase: "before-upgrade" }, { ...manifest, digest: { movies: "01" } }, { ...manifest, success: false }, { ...manifest, acquisition: { mappings_without_acquisition: "1" } }])
       expect((await command([wire(1, 101)], [2], backup)).exit).toBe(1);
     const output: string[] = [];
     expect(await batchCommand(["--manifest", "x", "--report", "y", "--exit", "2"], { read: async () => { throw new Error("invented_secret_sentinel"); }, output: text => output.push(text) })).toBe(1);

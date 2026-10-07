@@ -99,13 +99,15 @@ in the same database. After an unhandled process kill, inspect the recorded ID
 and matching run labels/network/tmpfs before emergency removal as documented
 in the plan. Never remove containers by a guessed name or broad filter.
 
-`supabase/migrations` owns four released migrations and the local additive evidence
-migration. The shared metadata disposable harness discovers every SQL migration
+`supabase/migrations` owns six migrations, including additive evidence and
+Watchmode provider identity seeding. The shared metadata disposable harness
+discovers every SQL migration
 and applies each once in filename order. Upgrade tests alone use its explicit
 sweeps cutoff, seed legacy rows, then apply the remaining migration. The separate
 original schema runner retains its released baseline; isolated catalog acceptance
-upgrades its original setup through the shared filename discovery. No retained
-availability migration has been applied. Retirement-aware importer/readback code
+upgrades its original setup through the shared filename discovery. The reported
+first retained gate reached state 5; this work does not apply migration 6 to it.
+Retirement-aware importer/readback code
 requires the evidence schema and refuses the older retained schema before ingestion.
 The migrations require PostgreSQL 17 and the platform roles,
 `auth.users(id)`, `auth.uid()` and
@@ -272,9 +274,21 @@ npm run catalog:local -- start
 The [retained availability plan](docs/plans/retained-availability-live.md)
 specifies `npm run catalog:local -- backup --phase before-upgrade`, followed by
 upgrade, inspect and `npm run catalog:local -- backup --phase after-upgrade`
-before any live request. The initial state must be 3 and the post-upgrade state 5.
+before any live request. Before-upgrade accepts recognized states 3, 4 or 5;
+after-upgrade requires current state 6. State 6 seeds Netflix (203), HBO Max (387),
+Disney+ (372) and Hulu (157) Watchmode identities with stable UUIDs. Updates and
+deletes of Watchmode mappings, including provider cascades, refuse. Live preflight
+checks all four mappings under the refresh lock before cleanup or spending;
+`provider_mapping_missing` stops with zero provider calls.
 Its single Gate B authorization covers those backups,
 upgrade and up to nine attached live runs with explicit report-based stop rules.
+Run 1 completed 30 pages and enriched 100 titles, then failed its first source
+check because the mappings were absent; it used one run and 31 credits. After
+merge and separate authorization, the next sequence is state-5 backup, upgrade,
+inspect, state-6 backup, then resumed runs. The user decides the remaining allowed
+run count; caps and per-run limits are unchanged. The backup's acquisition check
+requires every identity mapping to have recorded provenance, so run 1's Watchmode
+identities and membership acquisitions are accepted.
 Backup and live dispatch are implemented; this implementation does not authorize
 retained execution. See [implementation evidence](docs/plans/retained-availability-live-implementation.md).
 
@@ -316,8 +330,13 @@ apply.
 Backups stream at most 64 MiB within 120 seconds from a socket-authenticated dump
 using the coordinator's exported read-only snapshot. A dump is valid only with its
 successful exclusive manifest and matching SHA-256. Both files stay outside cleanup;
-delete them when batch results are accepted, no later than six calendar months from
-the oldest metadata timestamp. A restore needs separate authorization. Failure
+delete them when batch results are accepted, and no later than the manifest's
+`retentionDeadline` (also printed by the command): the earlier of six calendar
+months from the oldest TMDB metadata and the oldest Watchmode-derived timestamp plus
+the database's Watchmode window (30 days). A dump of a swept catalog therefore
+expires about a month after its oldest Watchmode data. Backup refuses data already
+past that deadline, and any pre-evidence catalog (state 3 or 4) holding provider-cache
+rows, since those states have no retention policy. A restore needs separate authorization. Failure
 invalidates this invocation's partial files. Requested POSIX modes do not verify
 Windows NTFS permissions. Ctrl+C uses SIGINT; SIGTERM shares the cancellation path,
 with no Windows delivery claim.
@@ -325,8 +344,8 @@ with no Windows delivery claim.
 For an existing catalog, **separate retained upgrade authorization** is required
 before running `npm run catalog:local -- upgrade`. Upgrade reads the fixed setup
 credential, verifies the owned loopback target and marker, and recognizes only the
-original, sweeps and evidence inventories with their distinguishing columns and
-triggers. Inspect/start report `upgrade_required` for a recognized older catalog;
+original, sweeps, evidence and provider-seeded inventories with their
+distinguishing columns and triggers. Inspect/start report `upgrade_required` for a recognized older catalog;
 obtain separate upgrade authorization and preserve its existing data. This code
 is not a failed fresh setup or a reason for disposal. Upgrade applies missing migrations in filename order, one transaction each;
 a failure preserves the previous complete state and reports a fixed code. A current

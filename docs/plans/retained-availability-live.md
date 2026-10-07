@@ -1,8 +1,8 @@
 # Retained availability gate and local benchmark
 
-Status: draft for scope/implementation approval. Preparing this plan authorizes
-no implementation, retained database access, private-file cleanup, provider call,
-commit, push, PR, merge, infrastructure, paid action or deployment.
+Status: original implementation contract, with the October 6 provider-seed
+follow-up below. Documentation and implementation authorize no further retained
+execution, publication, infrastructure, paid action or deployment.
 
 Planning baseline: `main` at `446f78f`, the retained upgrade and live-composition
 private-file cleanup (#9), squash-merged with PR CI green (check, database,
@@ -17,6 +17,41 @@ The [architecture](../architecture.md), [engineering standards](../engineering.m
 and [upgrade evidence](retained-upgrade-implementation.md) own the underlying
 product rules and worker behavior. This plan owns the next CLI change and the
 separately authorized local execution gates. [Hosting](hosting.md) remains later.
+
+## October 6 follow-up: provider seed and interrupted batch
+
+The original state-3 to state-5 contract below records the first retained gate.
+The provider-seed handoff supersedes those initial-state restrictions: recognized
+states 3/4/5 may be backed up before upgrade; the after-upgrade backup requires
+current state 6. Every database receives the four verified Watchmode identities
+through migration 6. Its mapping guard is the structural state marker; locked
+live preflight also verifies the data before cleanup or provider requests.
+
+The user-reported run 1 (`2b273ff3-824b-49d2-b04e-e1111e094c8d`, October 6)
+completed all four sweeps, 30 pages, and enriched 100 titles. Its first evidence
+source check failed with `request_invalid` because the mappings were missing,
+after 31 credits. The reported retained state is 5, with 200 movies, no personal
+rows, four complete sweeps and state-3/state-5 restore points. This implementation
+does not inspect those resources or private files and does not independently
+verify these retained facts.
+
+After merge and separate authorization, the proposed sequence is a state-5
+`backup --phase before-upgrade`, `upgrade`, `inspect`, a state-6
+`backup --phase after-upgrade`, identity comparison, then batch resumption.
+Run 1 counts toward the nine-run and aggregate-credit caps. The user must decide
+how many resumed runs to authorize; no new allowance is inferred. All per-run
+limits, ordered stop rules, failure vetoes and evidence requirements below remain
+unchanged. Run 1's failure stopped the batch and requires new authorization.
+
+The original acquisition check assumed a never-swept catalog and would reject run 1's
+legitimate Watchmode identities: on 2026-10-06 the retained catalog returned 186
+mismatches and 424 Watchmode-path acquisitions. It is replaced by the provenance
+completeness check below, which returned 0 on the same catalog.
+Provider IDs are deliberately excluded from the movie identity digest because
+migration 6 adds them. Mapping absence reports `provider_mapping_missing` with
+zero provider calls/credits and no private cleanup.
+
+See [provider seed implementation evidence](watchmode-provider-seed-implementation.md).
 
 ## 1. Outcome and scope
 
@@ -187,47 +222,44 @@ microseconds on output, retaining PostgreSQL timestamp precision. Compare every
 returned count/digest/timestamp
 exactly; schema state is recorded separately and must change as expected.
 
-The state-5 acquisition check executes separately, only when detection confirms
-that table exists:
+The acquisition check executes separately in every state that has the
+acquisitions table (5 and 6):
 
 ```sql
-SELECT count(*) AS acquisition_mismatches
+SELECT count(*) AS mappings_without_acquisition
 FROM app.movie_external_ids e
-JOIN app.movies m ON m.id = e.movie_id
-WHERE (SELECT count(*) FROM app.movie_external_id_acquisitions a
-       WHERE a.movie_id = e.movie_id AND a.source = e.source
-         AND a.acquisition_path = 'tmdb_metadata'
-         AND a.acquired_at = m.metadata_refreshed_at) <> 1;
-
-SELECT count(*) AS unexpected_acquisitions
-FROM app.movie_external_id_acquisitions a
-JOIN app.movies m ON m.id = a.movie_id
-WHERE a.acquisition_path <> 'tmdb_metadata'
-   OR a.acquired_at <> m.metadata_refreshed_at;
+WHERE NOT EXISTS (SELECT 1 FROM app.movie_external_id_acquisitions a
+                  WHERE a.movie_id = e.movie_id AND a.source = e.source);
 ```
 
-Migration 5 creates `(movie_id, source, acquisition_path, acquired_at)` and backfills
-from the original mapping/movie timestamps. Both results must be zero immediately
-after upgrading the legacy catalog; checks passed in the disposable probe. Compare
-identity digests first, so the post-upgrade timestamps are also proved equal to the
-pre-upgrade values. State 5 is supported for the second backup only, after the
-state-3 upgrade has passed. No acquisition-tuple digest, per-path baseline counts
-or current-state source/no-op comparison branch is needed.
+It must be zero: every identity mapping has recorded provenance. Unlike the
+original legacy-backfill check (exactly one `tmdb_metadata` acquisition at
+`metadata_refreshed_at`, nothing else), it holds after live sweeps add Watchmode
+identities and `watchmode_membership` acquisitions. The state-3 upgrade's strict
+backfill result was verified on 2026-10-06 before run 1. Compare identity digests
+first, so the post-upgrade timestamps are also proved equal to the pre-upgrade values.
 
 Backup never upgrades, resets, repairs or writes rows. Restoring is not automated:
 a `pg_restore` into the retained database needs its own explicit authorization.
 Record actual digest counts; the documented 100-title catalog is historical
 evidence, not a current assertion.
 
-Retention: a dump carries TMDB data whose age is its oldest `metadata_refreshed_at`,
-and it sits outside automatic expiry. Delete the batch's dumps once its results
-are accepted, and no later than six calendar months after that oldest timestamp
-(about 2027-04-04 for the 2026-10-04 import). Record that deadline in the operator
-evidence, and remove its provider-bearing manifest on the same schedule. Both
-backups precede the first Watchmode request; a different initial state requires
-rescoping rather than introducing another dump-retention policy.
+Retention: a dump sits outside automatic expiry, so its manifest records the earliest
+applicable source-age deadline: six calendar months after the oldest TMDB
+`metadata_refreshed_at`, or the oldest Watchmode-derived timestamp plus the
+database's `provider_retention_policy` window (30 days), whichever is earlier.
+Watchmode-derived timestamps are the age columns of every table bound to
+`guard_provider_cache` plus `watchmode_membership` acquisitions, read from the
+trigger bindings rather than a second list. Delete each dump and its manifest once
+batch results are accepted, and no later than that deadline. The two pre-run backups
+(states 3 and 5, before run 1) carry TMDB data only, so their deadline is
+2027-04-04. A backup taken after run 1 contains Watchmode data from 2026-10-06 and
+expires about 2026-11-05. Backup refuses data already past its deadline, and a
+state-3 or state-4 catalog holding any provider-cache row (availability tables, and
+from state 4 the sweep and detail-attempt tables), since those states have no
+retention policy.
 If a source-age deadline has already passed, stop and review preservation/expiry
-before creating a new copy. No dump is made after the live batch under this scope.
+before creating a new copy.
 
 ## 4. Proposed batch configuration and limits
 

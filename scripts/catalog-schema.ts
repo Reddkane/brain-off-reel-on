@@ -15,21 +15,27 @@ export const currentTables = [...originalTables, ...sweepTables,
   "provider_retention_policy", "movie_external_id_acquisitions",
   "watchmode_offer_variants", "watchmode_links", "watchmode_arrivals"].sort();
 
-export const currentMigrationCount = 5;
+export const currentMigrationCount = 6;
+
+const availabilityCacheTables = ["availability_snapshots", "movie_availability", "availability_observations", "availability_tracks"];
+/** Provider-cache tables existing in a state; from state 5 they are bound to guard_provider_cache. */
+export function providerCacheTables(state: 3 | 4 | 5 | 6): string[] {
+  return state >= 4 ? [...availabilityCacheTables, ...sweepTables] : [...availabilityCacheTables];
+}
 
 /** No ledger: accept only known inventories with their distinguishing bindings. */
-export async function catalogSchemaState(client: PoolClient): Promise<3 | 4 | 5> {
+export async function catalogSchemaState(client: PoolClient): Promise<3 | 4 | 5 | 6> {
   const tables = (await client.query("SELECT tablename FROM pg_tables WHERE schemaname='app' ORDER BY tablename"))
     .rows.map(row => row.tablename).join(",");
-  const state = tables === originalTables.join(",") ? 3 :
+  let state: 3 | 4 | 5 | 6 | null = tables === originalTables.join(",") ? 3 :
     tables === [...originalTables, ...sweepTables].sort().join(",") ? 4 :
-      tables === currentTables.join(",") ? currentMigrationCount : null;
+      tables === currentTables.join(",") ? 5 : null;
   if (!state)
     throw new Error("upgrade_state_unknown");
   const columns = (await client.query(`SELECT table_name,column_name FROM information_schema.columns
     WHERE table_schema='app' AND (column_name='metadata_state' OR column_name='retention_at')
     ORDER BY table_name,column_name`)).rows.map(row => `${row.table_name}.${row.column_name}`);
-  const expectedColumns = state === 5 ? [
+  const expectedColumns = state >= 5 ? [
     "availability_observations.retention_at", "movie_availability.retention_at",
     "movies.metadata_state", "watchmode_arrivals.retention_at", "watchmode_offer_variants.retention_at",
   ] : [];
@@ -40,22 +46,23 @@ export async function catalogSchemaState(client: PoolClient): Promise<3 | 4 | 5>
     JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid
     JOIN pg_namespace pn ON pn.oid=p.pronamespace
     WHERE n.nspname='app' AND NOT t.tgisinternal`)).rows;
-  const guard = state === 5 ? "guard_provider_cache" : "guard_immutable_record";
+  const providerGuard = triggers.find(row => row.tgname === "watchmode_provider_mapping_immutable");
+  if (providerGuard) {
+    if (state !== 5 || providerGuard.table_name !== "streaming_provider_external_ids" ||
+      providerGuard.proname !== "guard_watchmode_provider_mapping" || providerGuard.function_schema !== "app" ||
+      providerGuard.tgenabled !== "O" || providerGuard.tgtype !== 27) throw new Error("upgrade_state_unknown");
+    state = currentMigrationCount;
+  }
+  const guard = state >= 5 ? "guard_provider_cache" : "guard_immutable_record";
   // pg_trigger bits: ROW=1, BEFORE=2, INSERT=4, DELETE=8, UPDATE=16.
-  const bindings = [
-    ["availability_snapshots", "trg_availability_snapshots_immutable", guard, 27],
-    ["movie_availability", "trg_movie_availability_immutable", guard, 27],
-    ["availability_observations", "trg_availability_observations_immutable", guard, 27],
-    ["availability_tracks", "trg_availability_tracks_immutable", guard, 27],
-  ];
+  const bindings = providerCacheTables(state).map(table =>
+    [table, availabilityCacheTables.includes(table) ? `trg_${table}_immutable` : `${table}_immutable`, guard, 27]);
   if (state >= 4) {
-    for (const table of sweepTables)
-      bindings.push([table, `${table}_immutable`, guard, 27]);
     for (const table of ["watchmode_pages", "watchmode_memberships", "watchmode_sweep_events"])
       bindings.push([table, `${table}_seal`, "check_watchmode_evidence", 7]);
     bindings.push(["watchmode_enrichment_checks", "watchmode_enrichment_checks_age", "check_watchmode_evidence", 7]);
   }
-  if (state === 5) {
+  if (state >= 5) {
     bindings.push(["movie_external_id_acquisitions", "external_id_acquisitions_immutable", "guard_external_id_acquisition", 27]);
     bindings.push(["provider_retention_policy", "retention_policy_seal", "guard_retention_policy", 31]);
   }

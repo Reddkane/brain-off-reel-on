@@ -21,6 +21,26 @@ test("evidence fresh replay: guard inventory, own-age cascades and acquisition p
         const ctx = () => ({ signal: db.signal, deadline: Date.now() + 10000 });
         const store = createWatchmodeStore(db.pool, db.guard);
         const evidenceStore = createEvidenceStore(store);
+        await t.test("non-superuser migration owner and service role preserve seeded provider identities", async () => {
+            const client = await db.admin.connect();
+            try {
+                for (const role of ['bor_migrator', 'service_role']) {
+                    for (const sql of [
+                        "UPDATE app.streaming_provider_external_ids SET external_id='999' WHERE source='watchmode' AND external_id='203'",
+                        "DELETE FROM app.streaming_provider_external_ids WHERE source='watchmode' AND external_id='203'",
+                        "DELETE FROM app.streaming_providers WHERE id='60000000-0000-4000-8000-000000000203'",
+                    ]) {
+                        await client.query(`BEGIN; SET LOCAL ROLE ${role}`);
+                        await assert.rejects(client.query(sql), { code: '23514' });
+                        await client.query('ROLLBACK');
+                    }
+                    await client.query(`BEGIN; SET LOCAL ROLE ${role}`);
+                    assert.equal((await client.query("UPDATE app.streaming_providers SET display_name='Synthetic renamed service' WHERE id='60000000-0000-4000-8000-000000000203'")).rowCount, 1);
+                    await client.query('ROLLBACK');
+                }
+            }
+            finally { await client.query('ROLLBACK'); client.release(); }
+        });
         await t.test("all thirteen cache guards and the separate acquisition guard retain insertion seals", async () => {
             const rows = (await db.admin.query(`SELECT c.relname,p.proname FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND p.proname IN ('guard_provider_cache','guard_external_id_acquisition')`)).rows;
             assert.equal(rows.filter(r => r.proname === 'guard_provider_cache').length, 13);
@@ -206,11 +226,6 @@ test("evidence fresh replay: guard inventory, own-age cascades and acquisition p
         });
         await t.test("actual provider repeat composition persists uncertainty and background links under shared budgets", async () => {
             const f = await fixtures();
-            for (const source of [203, 387, 372, 157]) {
-                const id = randomUUID();
-                await db.admin.query("INSERT INTO app.streaming_providers(id,display_name) VALUES($1,'Synthetic service')", [id]);
-                await db.admin.query("INSERT INTO app.streaming_provider_external_ids VALUES($1,'watchmode',$2)", [id, String(source)]);
-            }
             const raw = JSON.parse(await readFile('config/availability-sweeps.example.json', 'utf8'));
             const config = decodeSweepConfig({ ...raw, generation: 'evidence-repeat', terms: { ...raw.terms, accepted: true }, evidence: { enabled: true, movies: 10, sourceChecks: 1, flaggedWatchmodeIds: [] } });
             let now = Date.now() - 86400000, present = false, charges = 0, checks = 0;

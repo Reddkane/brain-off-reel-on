@@ -439,7 +439,7 @@ if (process.argv[1] &&
     const result = await localCommand(action, retained, `${root}/.cache/real-catalog/private`, docker,
       isBackup ? { phase: args[2] as import("./catalog-backup.ts").BackupPhase, root, signal: controller.signal } : undefined);
     if (result && "code" in result) {
-      console.log(JSON.stringify({ code: result.code, manifest: result.manifest, dump: result.dump, digest: result.digest, schemaState: result.schemaState }));
+      console.log(JSON.stringify({ code: result.code, manifest: result.manifest, dump: result.dump, digest: result.digest, schemaState: result.schemaState, retentionDeadline: result.retentionDeadline }));
     }
     else console.log(result ? (result.applied ? "catalog_upgrade_applied" : "catalog_upgrade_current") : "catalog_local_ok");
   }
