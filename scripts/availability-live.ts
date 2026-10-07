@@ -62,6 +62,10 @@ export async function liveSweepComposition(config: SweepConfig, signal: AbortSig
         try {
           await client.query("BEGIN READ ONLY; SET LOCAL ROLE service_role");
           if (await catalogSchemaState(client) !== currentMigrationCount) throw new SweepError("upgrade_required");
+          const mappings = await client.query(`SELECT required.id FROM (VALUES ('203'),('387'),('372'),('157')) required(id)
+            LEFT JOIN app.streaming_provider_external_ids e ON e.source='watchmode' AND e.external_id=required.id
+            GROUP BY required.id HAVING count(e.provider_id)<>1`);
+          if (mappings.rowCount !== 0) throw new SweepError("provider_mapping_missing");
           await client.query("COMMIT");
         }
         catch (error) {

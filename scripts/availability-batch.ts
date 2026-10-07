@@ -1,3 +1,4 @@
+import { currentMigrationCount } from "./catalog-schema.ts";
 import { pathToFileURL } from "node:url";
 import { boundedText, privateJson } from "./catalog-config.ts";
 import { sweepCodes } from "../src/server/providers/sweep-error.ts";
@@ -101,8 +102,8 @@ export async function batchCommand(args: readonly string[], io: BatchCLIIO): Pro
       inputs.push({ path: args[i + 1], exit: Number(args[i + 3]) });
     }
     const manifest = record(privateJson(await io.read(args[1]))), digest = record(manifest.digest), acquisition = record(manifest.acquisition);
-    if (manifest.success !== true || manifest.phase !== "after-upgrade" || manifest.schemaState !== 5 ||
-      acquisition.acquisition_mismatches !== "0" || acquisition.unexpected_acquisitions !== "0" ||
+    if (manifest.success !== true || manifest.phase !== "after-upgrade" || manifest.schemaState !== currentMigrationCount ||
+      acquisition.mappings_without_acquisition !== "0" ||
       typeof digest.movies !== "string" || !/^(?:0|[1-9]\d*)$/.test(digest.movies)) throw new Error();
     let previous: unknown = count(Number(digest.movies));
     const totals = { runs: 0, attemptedCredits: 0, details: 0, tmdbAttempts: 0 };

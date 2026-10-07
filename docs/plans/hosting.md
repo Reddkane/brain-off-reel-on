@@ -24,3 +24,13 @@ Choose and verify the retry mechanism during hosting implementation; daily Cron
 does not itself provide the required recovery policy. This note enables no schedule
 and changes no current worker code. Retained live sweeps remain blocked until
 Availability: evidence's retention path is implemented and accepted.
+
+## Provider identity
+
+Migration 6 seeds stable internal UUIDs and the verified direct Watchmode mappings
+for Netflix (203), HBO Max (387), Disney+ (372) and Hulu (157) in every database,
+including future hosted setup. Conflicting mappings abort the transaction; the
+mapping guard denies updates/deletes and provider cascades. Live composition
+checks the four mappings under its lock before cleanup or provider spending.
+Hosting must apply migrations rather than reproducing a test or manual seed.
+This note authorizes no hosted resources, schedule or provider requests.

@@ -1,4 +1,5 @@
 // Operator composition with test-owned files and an inspected disposable target only.
+import { operatorCopy } from "./operator-process.ts";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -168,11 +169,6 @@ test("actual CLI completes, repeats, resumes and cancels synthetic provider work
   await withDisposable(async db => {
     const root = await operatorRoot("bor-cli-complete-");
     const f = await fixtures();
-    for (const source of [203, 387, 372, 157]) {
-      const id = randomUUID();
-      await db.admin.query("INSERT INTO app.streaming_providers(id,display_name) VALUES($1,'Synthetic CLI service')", [id]);
-      await db.admin.query("INSERT INTO app.streaming_provider_external_ids VALUES($1,'watchmode',$2)", [id, String(source)]);
-    }
     const raw = JSON.parse(await readFile("config/availability-evidence.example.json", "utf8"));
     raw.terms.accepted = true;
     raw.generation = "synthetic-cli-complete";
@@ -341,5 +337,94 @@ test("SIGINT during locked schema preflight reports cancellation before cleanup/
       await db.admin.query("SELECT pg_advisory_unlock(1112494674,1)");
     }
     finally { if (!pool.ended) await pool.end(); await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+
+test("missing migration seed refuses before cleanup with zero credits and provider calls", { timeout: 120000 }, async () => {
+  await withDisposable(async db => {
+    const root = await operatorRoot("bor-cli-missing-seed-");
+    const raw = JSON.parse(await readFile("config/availability-evidence.example.json", "utf8"));
+    raw.terms.accepted = true;
+    const expired = join(root, ".cache/availability/private", `source-cache-${randomUUID()}.json`);
+    await writeFile(expired, JSON.stringify({ checkedAt: "2020-01-01T00:00:00Z" }));
+    // Only this disposable migration owner bypasses guards, then restores all bindings.
+    await db.admin.query("ALTER TABLE app.streaming_provider_external_ids DISABLE TRIGGER USER; DELETE FROM app.streaming_provider_external_ids WHERE source='watchmode' AND external_id='203'; ALTER TABLE app.streaming_provider_external_ids ENABLE TRIGGER USER");
+    let calls = 0, result!: Awaited<ReturnType<typeof liveSweepComposition>>;
+    const pool = new pg.Pool(db.pool.options);
+    try {
+      const exit = await sweepCommand(["--config", ".cache/availability/private/synthetic.json", "--live"], {
+        root, read: async () => JSON.stringify(raw), output: () => {}, signal: db.signal,
+        live: async (config, signal) => {
+          result = await liveSweepComposition(config, signal, {
+            root, pool: () => pool, guard: db.guard, now: Date.now, password: async () => "synthetic",
+            watchmodeKey: async () => "synthetic-watchmode-key", tmdbToken: async () => "synthetic-tmdb-token",
+            transport: { sleep: async () => {}, fetch: async () => { calls++; return new Response("", { status: 401 }); } },
+          });
+          return result;
+        },
+      });
+      assert.equal(exit, 1);
+      assert.equal(result.report.code, "provider_mapping_missing");
+      assert.equal(result.report.privateCleanup, "not_configured");
+      assert.equal(result.report.attemptedCredits, 0);
+      assert.equal(calls, 0);
+      await access(expired);
+      assert(pool.ended);
+    }
+    finally { if (!pool.ended) await pool.end(); await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+
+test("real live CLI process uses migration seeds and refuses missing mapping without cleanup or spend", { timeout: 120000 }, async () => {
+  await withDisposable(async db => {
+    const copy = await operatorCopy();
+    try {
+      const entry = join(copy.root, "scripts/availability-live.ts");
+      const source = (await readFile(entry, "utf8")).replaceAll("\r\n", "\n");
+      // Replace only default effects in the test copy: invented keys, inspected disposable DB,
+      // synthetic empty pages. The production CLI entry and locked preflight remain intact.
+      const effects = `export function defaultLiveSweepIO(): LiveSweepIO {
+        return { root: repositoryRoot, watchmodeKey: async () => 'synthetic-watchmode-key',
+          tmdbToken: async () => 'synthetic-tmdb-token', password: async () => 'synthetic',
+          pool: () => new TestPool(${JSON.stringify({ ...db.pool.options, password: db.pool.options.password })}), guard: disposableGuard, now: Date.now,
+          transport: { sleep: async () => {}, fetch: async input => {
+            await writeFile(join(repositoryRoot,'calls.txt'),'request\\n',{flag:'a'});
+            const url = new URL(String(input));
+            if (url.pathname.includes('status')) return Response.json({quota:2500,quotaUsed:0});
+            return Response.json({page:1,total_pages:0,total_results:0,titles:[]});
+          } } };
+      }`;
+      const composition = /export function defaultLiveSweepIO\(\): LiveSweepIO \{[\s\S]*?\n\}\n/;
+      assert(composition.test(source), "synthetic composition must match before launching any process");
+      await writeFile(entry, `import { Pool as TestPool } from 'pg';\nimport { disposableGuard } from '../tooling/metadata-disposable.ts';\n` +
+        source.replace(composition, () => effects + "\n"));
+      const raw = JSON.parse(await readFile("config/availability-evidence.example.json", "utf8"));
+      raw.terms.accepted = true;
+      const directory = join(copy.root, ".cache/availability/private");
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "synthetic.json"), JSON.stringify(raw));
+      const args = ["--config", ".cache/availability/private/synthetic.json", "--live"];
+      const success = await copy.run("availability-sweeps.ts", args);
+      assert.equal(success.code, 0, success.stdout + success.stderr);
+      assert.match(success.stdout, /exit=0 code=complete/);
+      const calls = await readFile(join(copy.root, "calls.txt"), "utf8");
+      assert(calls.length > 0);
+      const expired = join(directory, `source-cache-${randomUUID()}.json`);
+      await writeFile(expired, JSON.stringify({ checkedAt: "2020-01-01T00:00:00Z" }));
+      await db.admin.query("ALTER TABLE app.streaming_provider_external_ids DISABLE TRIGGER USER; DELETE FROM app.streaming_provider_external_ids WHERE source='watchmode' AND external_id='203'; ALTER TABLE app.streaming_provider_external_ids ENABLE TRIGGER USER");
+      const refused = await copy.run("availability-sweeps.ts", args);
+      assert.equal(refused.code, 1);
+      assert.match(refused.stdout, /exit=1 code=provider_mapping_missing/);
+      assert.equal(await readFile(join(copy.root, "calls.txt"), "utf8"), calls);
+      await access(expired);
+      const reports = (await readdir(directory)).filter(name => name.startsWith("evidence-report-"));
+      const saved = await Promise.all(reports.map(async name => JSON.parse(await readFile(join(directory, name), "utf8"))));
+      const report = saved.find(value => value.code === "provider_mapping_missing");
+      assert.equal(report.attemptedCredits, 0);
+      assert.equal(report.privateCleanup, "not_configured");
+    }
+    finally { await copy.cleanup(); }
   });
 });

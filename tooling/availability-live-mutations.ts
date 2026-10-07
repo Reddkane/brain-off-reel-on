@@ -1,6 +1,19 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 const cases = [
+  { name: "backup_acquisition_skips_state5", file: "scripts/catalog-backup.ts", from: 'const acquisition = state >= 5', to: 'const acquisition = state === currentMigrationCount', tests: ["tests/db/catalog.test.ts"] },
+  { name: "watchmode_seed_removed", file: "supabase/migrations/20261006000001_watchmode_providers.sql",
+    from: `INSERT INTO app.streaming_provider_external_ids(provider_id,source,external_id) VALUES
+  ('60000000-0000-4000-8000-000000000203','watchmode','203'),
+  ('60000000-0000-4000-8000-000000000387','watchmode','387'),
+  ('60000000-0000-4000-8000-000000000372','watchmode','372'),
+  ('60000000-0000-4000-8000-000000000157','watchmode','157');`, to: "-- Seed removed by mutation control.", tests: ["tests/db/availability-live.test.ts"] },
+  { name: "watchmode_guard_removed", file: "supabase/migrations/20261006000001_watchmode_providers.sql",
+    from: `CREATE TRIGGER watchmode_provider_mapping_immutable BEFORE UPDATE OR DELETE ON app.streaming_provider_external_ids
+FOR EACH ROW EXECUTE FUNCTION app.guard_watchmode_provider_mapping();`, to: "-- Guard removed by mutation control.", tests: ["tests/db/catalog.test.ts", "tests/db/availability-evidence.test.ts"] },
+  { name: "watchmode_preflight_removed", file: "scripts/availability-live.ts", from: 'if (mappings.rowCount !== 0) throw new SweepError("provider_mapping_missing");', to: '// Mapping refusal removed by mutation control.', tests: ["tests/db/availability-live.test.ts"] },
+  { name: "backup_legacy_phase_rule", file: "scripts/catalog-backup.ts", from: 'if (phase === "before-upgrade" ? state === currentMigrationCount : state !== currentMigrationCount)', to: 'if (state !== (phase === "before-upgrade" ? 3 : 5))', tests: ["tests/db/catalog.test.ts"] },
+  { name: "batch_legacy_schema", file: "scripts/availability-batch.ts", from: 'manifest.schemaState !== currentMigrationCount', to: 'manifest.schemaState !== 5', tests: ["tests/metadata/availability-batch.test.ts"] },
   { name: "catalog_action_fallback_regression", file: "scripts/catalog-local.ts", from: 'action === "backup" ? backupCode(error) : "catalog_local_failed_inspect_required"', to: 'backupCode(error)', tests: ["tests/metadata/catalog-local-diagnostics.test.ts"] },
   { name: "batch_command_entry_removed", file: "scripts/availability-batch.ts", from: 'if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {', to: 'if (false) {', tests: ["tests/metadata/availability-batch.test.ts"] },
   { name: "batch_credit_total_reset", file: "scripts/availability-batch.ts", from: 'totals.attemptedCredits = count(totals.attemptedCredits + count(report.attemptedCredits));', to: 'totals.attemptedCredits = count(report.attemptedCredits);', tests: ["tests/metadata/availability-batch.test.ts"] },
