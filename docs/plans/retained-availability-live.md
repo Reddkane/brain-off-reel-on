@@ -1,8 +1,10 @@
 # Retained availability gate and local benchmark
 
-Status: original implementation contract, with the October 6 provider-seed
-follow-up below. Documentation and implementation authorize no further retained
-execution, publication, infrastructure, paid action or deployment.
+Status: **executed and closed (2026-10-07).** The batch stopped at 700 active titles
+by user decision; results are in [section 10](#10-results-2026-10-0607). The original
+contract and the October 6 provider-seed follow-up are kept below as written. This
+document authorizes no further retained execution, publication, infrastructure,
+paid action or deployment.
 
 Planning baseline: `main` at `446f78f`, the retained upgrade and live-composition
 private-file cleanup (#9), squash-merged with PR CI green (check, database,
@@ -586,3 +588,85 @@ counts/codes and avoid indefinite archives of raw responses or provider data.
    catalog (sections 4 and 6).
 3. **One authorization** covers backup, upgrade and the live batch, with a hard stop
    before any provider request if the backup, upgrade, identity comparison or acquisition check fails.
+
+## 10. Results (2026-10-06/07)
+
+Executed on `main` at `6a7c6ec` (run 1) and `5530c71` (upgrade cycle and resumed
+runs), from `.cache/availability/private/config.json` at the section 4 limits with
+evidence enabled. Figures come from each run's exclusive evidence report.
+
+### Sequence
+
+1. State-3 `before-upgrade` backup, upgrade to state 5, state-5 `after-upgrade`
+   backup: 100 movies, 197 mappings, zero personal rows, all 11 identity digest
+   values equal, legacy acquisition backfill exact (0/0).
+2. Run 1 failed its first evidence source check (`request_invalid`): no Watchmode
+   provider mappings existed anywhere outside tests. Fixed by migration 6 (#12).
+3. State-5 `before-upgrade` backup, upgrade to state 6, state-6 `after-upgrade`
+   backup: 200 movies, zero personal rows, digests equal, every mapping has
+   acquisition provenance, the four providers present.
+4. Five resumed runs; the fifth stopped the batch on `pagination_drift`.
+5. **User decision: stop at 700** rather than authorize three more runs. Link
+   readiness, not catalog size, is the limiting factor (below).
+6. All backups and the Watchmode verification probe responses were deleted on
+   2026-10-07, after results were accepted.
+
+### Per-run results
+
+| Run (UTC start) | Exit / code | Pages | Persisted | Credits (counted / account delta) | Wall | DB time | Active after |
+| --- | --- | ---: | ---: | --- | ---: | ---: | ---: |
+| 1 (10-06 16:43) | 1 `request_invalid` | 30 | 100 | 31 / unavailable | 70 s | 5.8 s | 200 |
+| 2 (10-07 18:24) | 2 `detail_budget` | 30 | 100 | 50 / 50 | 87 s | 17.8 s | 300 |
+| 3 (10-07 18:26) | 2 `detail_budget` | 30 | 100 | 50 / 50 | 85 s | 18.9 s | 400 |
+| 4 (10-07 18:28) | 2 `detail_budget` | 30 | 100 | 50 / 50 | 86 s | 17.9 s | 500 |
+| 5 (10-07 18:29) | 2 `detail_budget` | 30 | 100 | 50 / 50 | 87 s | 18.7 s | 600 |
+| 6 (10-07 18:31) | 2 `pagination_drift` | 19 | 100 | 40 / 40 | 79 s | 17.4 s | 700 |
+
+Totals: 6 of 9 authorized runs, 271 counted credits (account used 10 → 281 of
+2,500). Wherever the final status call succeeded, counted credits equalled the
+account delta exactly. No run approached the 100-credit, 60-page, 10-minute or
+120-second database limits.
+
+### Membership and drift
+
+A full scan is 30 pages: Netflix 15, HBO Max 6, Disney+ 4, Hulu 5 (memberships
+3,671 / 1,319 / 878 / 1,038 on October 7; 6,894 / 6,906 total across the two days).
+Run 6's Netflix sweep returned a title already seen on an earlier page (the list
+changed mid-scan) and was sealed as failed on page 5; the other three services
+completed and enrichment continued from the last intact Netflix set. This is the
+designed service-local outcome, but the batch rule treats `pagination_drift` as a
+stop. With Netflix at 15 pages, drift will recur in scheduled operation.
+
+### Evidence and pre-classification readiness (after run 6)
+
+| Measure | Value |
+| --- | --- |
+| Active / retired titles | 700 / 0 |
+| Source checks | 20 per run, 0 failures, 0 unknown source types |
+| Subscription offers / with valid link / missing link | 104 / 103 / 1 |
+| Cached subscription links ready | **99 of 700** |
+| Missing runtime / certification | 1 / 29 |
+| Origin group | unknown for all 700 (origin-v1 has no verified rules) |
+| Arrival intervals | 0 (first sweeps cannot establish arrivals) |
+| Enrichment balance per run (Netflix/HBO Max/Disney+/Hulu) | about 25–35 each |
+
+### Findings for later work
+
+- **Link readiness is the bottleneck.** About one subscription offer per checked
+  title, and only 20 checks per run, so readiness grows ~20 titles per run while the
+  catalog grows 100. Raising `evidence.sourceChecks` (credits allowing) is the
+  lever, not catalog size. Owner: hosting / evidence configuration.
+- **`pagination_drift` should not stop scheduled work.** The failed service is
+  already sealed safely; hosting should treat it as service-partial and continue,
+  with a retry policy. Owner: hosting.
+- **Refresh clustering.** 500 titles were enriched within eight minutes on
+  2026-10-07 (and 100 on 2026-10-06); they become due for TMDB refresh together
+  around March 2027.
+  Owner: hosting.
+- **Origin is unknown everywhere.** Classification and ranking must not depend on
+  origin until verified rules exist.
+- **Cost.** About 50 credits per daily full run at these settings (~1,500 per month)
+  against the 2,500 free allowance.
+- **Process.** Two defects surfaced only in real execution: the backup CLI deadlocked
+  as a process entry (#11), and evidence depended on provider rows only tests
+  created (#12). Both now have process-entry or no-fixture-seed regressions.
