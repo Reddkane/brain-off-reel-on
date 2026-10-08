@@ -22,6 +22,13 @@ have synthetic/disposable acceptance coverage. The sweeps CLI supports explicit 
 Gate B authorization. See the [implementation review packet](docs/plans/availability-evidence-implementation.md).
 No hosted infrastructure or deployment has been created.
 
+Classification Phase A is implemented locally for review: the
+[rubric](docs/rubric-v1.md), offline input/output checks, immutable
+anchor/model/review storage, effective-label resolver and agreement/coverage CLI.
+See [the approved scope](docs/plans/classification.md) and
+[implementation evidence](docs/plans/classification-implementation.md).
+No classifier or metadata calls are enabled by this phase.
+
 See [the architecture plan](docs/architecture.md) for the product scope, data model, recommendation approach, evaluation protocol, work-area roadmap, and recommended coding models.
 
 Before implementation, read [AGENTS.md](AGENTS.md), the [engineering standards and release gates](docs/engineering.md), the [schema evidence](docs/plans/pr-02-schema.md), and the [metadata plan and evidence](docs/plans/pr-03-metadata.md).
@@ -44,6 +51,8 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 
 Open http://127.0.0.1:3000/ and stop the server with Ctrl+C.
 No environment files, credentials, external APIs, real catalog, or database are needed for the app or foundation checks.
+Next may still automatically load existing env files. When credential reads are
+forbidden, run the shared checks from a credential-free copy of repository source.
 Local `.env*` files, generated Next types, and build/dependency/cache output are ignored.
 Next's `agentRules: false` preserves the repository-owned `AGENTS.md`; this is the only
 Next configuration needed for foundation work.
@@ -52,6 +61,9 @@ missing-favicon 404. It is not a PWA asset set or a generator-added starter asse
 
 | Command | Purpose |
 | --- | --- |
+| `npm run classification -- run --config config/classification.example.json` | Inert offline configuration check. `--live` refuses before credentials/database/provider access. |
+| `npm run test:classification:db` | Constraints, RLS, production creation/import/review/export processes and six-to-seven upgrade on inspected disposable targets. Run DB suites sequentially. |
+| `npm run test:classification:controls` | Four temporary mutations, verified restoration, then final offline and disposable DB green. Run alone. |
 | `npm run typecheck` | Generate Next types with `next typegen`, then check strict app/tooling and independent pure projects. Works before dev/build. |
 | `npm run lint` | Lint source, tests, config, and tooling with zero warnings. |
 | `npm test` | Run foundation boundary and offline metadata suites; no Docker, credentials or provider network. |
@@ -99,8 +111,13 @@ in the same database. After an unhandled process kill, inspect the recorded ID
 and matching run labels/network/tmpfs before emergency removal as documented
 in the plan. Never remove containers by a guessed name or broad filter.
 
-`supabase/migrations` owns six migrations, including additive evidence and
-Watchmode provider identity seeding. The shared metadata disposable harness
+`supabase/migrations` owns seven migrations, including additive evidence,
+Watchmode provider identity seeding and classification review-parent/privacy
+constraints. Classification state 7 is validated only on disposable targets;
+the retained catalog remains at state 6 and was not accessed or upgraded here.
+Availability-live preflight and completed setup require state 7: the next retained
+live sweep needs a separately authorized classification migration upgrade first.
+The shared metadata disposable harness
 discovers every SQL migration
 and applies each once in filename order. Upgrade tests alone use its explicit
 sweeps cutoff, seed legacy rows, then apply the remaining migration. The separate
@@ -180,6 +197,39 @@ synthetic composition, inspected disposable targets and mutation controls;
 invoked pg acceptance, and `tests/fixtures/pr-03` contains invented data only.
 Future ownership: `src/components` for reusable UI and `src/server/classification`
 for classification effects.
+
+### Offline classification workflow
+
+`npm run classification -- anchors-template` prints an unfilled template.
+Add `--write --output .cache/classification/private/anchors.json` to create it
+exclusively, then fill movie identity, four scores and uncertainty yourself.
+`anchors-import --input <private-file>` validates only; `reviews-template` and
+`reviews-import` provide the parallel model-parent review workflow.
+`anchors-ingest --input <private-id-list>` validates an ID-only metadata list;
+its live dispatch remains disabled. It never uses the personal ratings writer.
+
+Storage effects require an explicitly trusted composition supplying an inspected
+pool, checkout guard and nonserializable capability through
+`scripts/classification-effects.ts`. The shipped composition is empty: standalone
+`--apply` and `export --read-local` refuse `local_store_unconfigured`. No new
+credential reader was built under this phase's restrictions. Disposable tests
+exercise those production methods through real CLI processes with injected pools;
+real connection wiring/retained execution needs separate authorization.
+
+`agreement` and `coverage` accept a bounded private exported snapshot and explicit
+`--as-of YYYY-MM-DDTHH:mm:ss.sssZ`; use `--write-report --output <private-file>`
+to save detailed results. Public output contains counts/codes, not ratings or notes.
+Snapshots include current input fingerprints, rejected/legacy-row counts and a
+source-age retention deadline. Delete provider-bearing snapshots by that deadline;
+expired snapshots refuse even with a past as-of date. Windows ACL privacy must be
+checked before using real personal labels; POSIX modes do not establish it.
+
+Spend values are integer micro-US-dollars. Phase A has zero live spend and no
+classifier adapter. Continuations require the prior exclusive spend report;
+configuration identity hashes the limits/candidates as well as the declared label.
+Human anchors calibrate only; the latest model-parent review can change effective
+coverage, including a later defer revoking an earlier resolution. Descriptive
+agreement is not a measured model-quality or enjoyment guarantee.
 
 Pure files reject packages, built-ins, aliases, absolute paths, dynamic imports,
 CommonJS/import-equals, import-type expressions, framework directives, explicit
@@ -274,8 +324,9 @@ npm run catalog:local -- start
 The [retained availability plan](docs/plans/retained-availability-live.md)
 specifies `npm run catalog:local -- backup --phase before-upgrade`, followed by
 upgrade, inspect and `npm run catalog:local -- backup --phase after-upgrade`
-before any live request. Before-upgrade accepts recognized states 3, 4 or 5;
-after-upgrade requires current state 6. State 6 seeds Netflix (203), HBO Max (387),
+before any live request. Before-upgrade accepts recognized states 3, 4, 5 or 6;
+after-upgrade now requires current state 7. Historical state-6 manifests remain
+readable for the closed batch's evidence. State 6 seeds Netflix (203), HBO Max (387),
 Disney+ (372) and Hulu (157) Watchmode identities with stable UUIDs. Updates and
 deletes of Watchmode mappings, including provider cascades, refuse. Live preflight
 checks all four mappings under the refresh lock before cleanup or spending;

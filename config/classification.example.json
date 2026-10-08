@@ -1,0 +1,13 @@
+{
+  "version": "classification-run-v1",
+  "phase": "A",
+  "candidates": ["unconfigured"],
+  "configId": "phase-a-offline-v1",
+  "spendCap": 0,
+  "perCallMaximum": 0,
+  "maxCalls": 180,
+  "maxAttempts": 3,
+  "attemptMs": 1000,
+  "durationMs": 30000,
+  "continuation": false
+}

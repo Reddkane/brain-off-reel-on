@@ -102,7 +102,7 @@ export async function batchCommand(args: readonly string[], io: BatchCLIIO): Pro
       inputs.push({ path: args[i + 1], exit: Number(args[i + 3]) });
     }
     const manifest = record(privateJson(await io.read(args[1]))), digest = record(manifest.digest), acquisition = record(manifest.acquisition);
-    if (manifest.success !== true || manifest.phase !== "after-upgrade" || manifest.schemaState !== currentMigrationCount ||
+    if (manifest.success !== true || manifest.phase !== "after-upgrade" || typeof manifest.schemaState !== "number" || ![6, currentMigrationCount].includes(manifest.schemaState) ||
       acquisition.mappings_without_acquisition !== "0" ||
       typeof digest.movies !== "string" || !/^(?:0|[1-9]\d*)$/.test(digest.movies)) throw new Error();
     let previous: unknown = count(Number(digest.movies));

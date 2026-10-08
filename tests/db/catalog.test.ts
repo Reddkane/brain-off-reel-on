@@ -95,7 +95,7 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
       const tables = (await admin.query("SELECT tablename FROM pg_tables WHERE schemaname='app' ORDER BY tablename")).rows;
       assert.deepEqual(tables.map(row => row.tablename), currentTables);
       const client = await admin.connect();
-      try { assert.equal(await catalogSchemaState(client), 6); }
+      try { assert.equal(await catalogSchemaState(client), currentMigrationCount); }
       finally { client.release(); }
       assert.deepEqual((await admin.query(`SELECT p.display_name,e.external_id FROM app.streaming_providers p
         JOIN app.streaming_provider_external_ids e ON e.provider_id=p.id WHERE e.source='watchmode' ORDER BY e.external_id`)).rows,
@@ -435,7 +435,7 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
           INSERT INTO app.movie_external_ids
           VALUES ('10000000-0000-4000-8000-000000000099','tmdb','999099')`);
         if (baseline === 5) await admin.query(await readFile(new URL(`../../supabase/migrations/${(await migrationFiles())[4]}`, import.meta.url), "utf8"));
-        if (baseline === 5) await baselineTest.test("real backup, upgrade and inspect processes transition 5 to 6", async () => {
+        if (baseline === 5) await baselineTest.test("real backup, upgrade and inspect processes transition 5 to current schema", async () => {
           const copy = await operatorCopy();
           try {
             const entry = join(copy.root, "scripts/catalog-local.ts");
@@ -461,7 +461,7 @@ test("catalog focused SQL/composition and A1 persistence acceptance", {
             assert.equal(inspect.code, 0, inspect.stderr);
             const after = await copy.run("catalog-local.ts", ["backup", "--phase", "after-upgrade"]);
             assert.equal(after.code, 0, after.stderr);
-            assert.equal(JSON.parse(after.stdout).schemaState, 6);
+            assert.equal(JSON.parse(after.stdout).schemaState, currentMigrationCount);
             assert(sameIdentity(digest, JSON.parse(after.stdout).digest));
             const mismatch = await copy.run("catalog-local.ts", ["backup", "--phase", "before-upgrade"]);
             assert.equal(mismatch.code, 1);
