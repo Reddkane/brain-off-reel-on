@@ -129,7 +129,9 @@ export async function withDisposable<T>(
     readonly signal?: AbortSignal;
     readonly docker?: Docker;
     /** Upgrade tests alone seed the merged sweeps baseline before remaining migrations. */
-    readonly baseline?: "sweeps";
+    readonly baseline?: "sweeps" | "classification";
+    /** Production-path acceptance can start from migrations without synthetic catalog rows. */
+    readonly fixtures?: boolean;
   } = {}
 ): Promise<T> {
   const interrupt = new AbortController();
@@ -276,11 +278,12 @@ export async function withDisposable<T>(
     }
     for (const file of migrations) {
       if (options.baseline === "sweeps" && file > "20261005000001_availability_sweeps.sql") break;
+      if (options.baseline === "classification" && file > "20261006000001_watchmode_providers.sql") break;
       await sql(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"), "bor_migrator");
       applied++;
     }
 
-    await sql(
+    if (options.fixtures !== false) await sql(
       await readFile(new URL("../tests/fixtures/pr-02-synthetic.sql", import.meta.url), "utf8"),
       "bor_migrator"
     );

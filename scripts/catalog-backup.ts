@@ -94,7 +94,7 @@ export async function verifyBackup(dump: string, manifestPath: string, signal: A
   const value = manifest as Record<string, unknown>;
   const expectedId = name.slice("catalog-backup-".length, -".dump".length);
   if (value.id !== expectedId || !["before-upgrade", "after-upgrade"].includes(String(value.phase)) ||
-    (value.phase === "before-upgrade" ? ![3, 4, 5].includes(Number(value.schemaState)) || typeof value.schemaState !== "number" : value.schemaState !== currentMigrationCount) ||
+    (value.phase === "before-upgrade" ? ![3, 4, 5, 6].includes(Number(value.schemaState)) || typeof value.schemaState !== "number" : ![6, currentMigrationCount].includes(Number(value.schemaState)) || typeof value.schemaState !== "number") ||
     typeof value.sha !== "string" || !/^[a-f0-9]{40}$/.test(value.sha) ||
     typeof value.createdAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value.createdAt) ||
     !Number.isFinite(Date.parse(value.createdAt)) || !value.digest || typeof value.digest !== "object") throw new Error("backup_manifest_invalid");

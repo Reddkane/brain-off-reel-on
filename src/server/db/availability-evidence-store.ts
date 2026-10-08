@@ -5,6 +5,8 @@ import type { StoreContext } from "./metadata-store.ts";
 import { instant, integer } from "../providers/tmdb-validation.ts";
 import { decodeSourceCheck, type SourceCheck, type SourceOffer } from "../providers/watchmode-sources.ts";
 import { SweepError, watchmodeSources } from "../providers/watchmode.ts";
+import { decodeStoredRevision } from "../classification/files.ts";
+import { ClassificationError } from "../../domain/classification.ts";
 export function createEvidenceStore(store: WatchmodeStore) {
     const transaction = store.transaction;
     return {
@@ -205,14 +207,22 @@ export function createEvidenceStore(store: WatchmodeStore) {
         },
         async readback(now: string, context: StoreContext) {
             return transaction(context, async (client) => {
+                // Human and legacy rows are evidence, not model classifications. Use
+                // the same stored-row checker as classification coverage/export.
+                const raw = (await client.query("SELECT * FROM app.movie_classifications LIMIT 10001")).rows;
+                if (raw.length > 10000) throw new ClassificationError("body_limit");
+                const modelMovies = new Set<string>();
+                for (const row of raw) {
+                    try { const revision = decodeStoredRevision(row); if (revision.kind === "model") modelMovies.add(revision.movieId); }
+                    catch { /* Legacy/invalid rows cannot establish classification coverage. */ }
+                }
                 const counts = (await client.query(`SELECT
         (SELECT count(*)::int FROM app.movies WHERE metadata_state='active') AS active,
         (SELECT count(*)::int FROM app.movies WHERE metadata_state='retired') AS retired,
         (SELECT count(*)::int FROM app.watchmode_offer_variants) AS offers,
         (SELECT count(*)::int FROM app.watchmode_links WHERE web_url IS NOT NULL AND expires_at>$1::timestamptz) AS links,
         (SELECT count(*)::int FROM app.watchmode_links WHERE web_url IS NULL) AS missing_links,
-        (SELECT count(*)::int FROM app.watchmode_arrivals WHERE reason='interval' AND retention_at+(SELECT watchmode_window FROM app.provider_retention_policy)>$1::timestamptz) AS intervals,
-        (SELECT count(*)::int FROM app.movie_classifications) AS classified`, [now])).rows[0];
+        (SELECT count(*)::int FROM app.watchmode_arrivals WHERE reason='interval' AND retention_at+(SELECT watchmode_window FROM app.provider_retention_policy)>$1::timestamptz) AS intervals`, [now])).rows[0];
                 const preClassification = (await client.query(`WITH latest AS (
           SELECT DISTINCT ON(movie_id) id,movie_id,checked_at FROM app.availability_snapshots
           WHERE source='watchmode' AND outcome='success' ORDER BY movie_id,checked_at DESC,id DESC
@@ -235,12 +245,12 @@ export function createEvidenceStore(store: WatchmodeStore) {
           count(*) FILTER(WHERE m.runtime_minutes IS NULL)::int AS missing_runtime,
           count(*) FILTER(WHERE m.original_language IS NULL)::int AS missing_language,
           count(*) FILTER(WHERE m.us_certification IS NULL)::int AS missing_certification,
-          count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM app.movie_classifications c WHERE c.movie_id=m.id))::int AS unclassified,
+          count(*) FILTER(WHERE NOT (m.id=ANY($2::uuid[])))::int AS unclassified,
           count(*) FILTER(WHERE EXISTS(SELECT 1 FROM ready r WHERE r.movie_id=m.id))::int AS cached_subscription_links_ready
-          FROM app.movies m WHERE m.metadata_state='active'`, [now])).rows[0];
+          FROM app.movies m WHERE m.metadata_state='active'`, [now, [...modelMovies]])).rows[0];
                 const services = (await client.query(`SELECT source_id,state,reason,drift_sweep IS NOT NULL AS drift,count(*)::int AS count FROM app.watchmode_arrivals
           WHERE retention_at+(SELECT watchmode_window FROM app.provider_retention_policy)>$1::timestamptz GROUP BY source_id,state,reason,drift_sweep IS NOT NULL ORDER BY source_id,state,reason,drift`, [now])).rows;
-                return { ...counts, preClassification, services };
+                return { ...counts, classified: modelMovies.size, preClassification, services };
             });
         }
     };

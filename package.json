@@ -7,6 +7,9 @@
     "node": ">=24 <25"
   },
   "scripts": {
+    "classification": "node scripts/classification.ts",
+    "test:classification:db": "node --test tests/db/classification.test.ts",
+    "test:classification:controls": "node tooling/classification-mutations.ts",
     "availability:sweeps": "node scripts/availability-sweeps.ts",
     "test:availability:sweeps:db": "node --test tests/db/availability-sweeps.test.ts tests/db/availability-corrections.test.ts",
     "test:availability:evidence:db": "node --test tests/db/availability-evidence.test.ts tests/db/availability-live.test.ts",

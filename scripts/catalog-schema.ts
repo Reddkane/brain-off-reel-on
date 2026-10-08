@@ -15,19 +15,19 @@ export const currentTables = [...originalTables, ...sweepTables,
   "provider_retention_policy", "movie_external_id_acquisitions",
   "watchmode_offer_variants", "watchmode_links", "watchmode_arrivals"].sort();
 
-export const currentMigrationCount = 6;
+export const currentMigrationCount = 7;
 
 const availabilityCacheTables = ["availability_snapshots", "movie_availability", "availability_observations", "availability_tracks"];
 /** Provider-cache tables existing in a state; from state 5 they are bound to guard_provider_cache. */
-export function providerCacheTables(state: 3 | 4 | 5 | 6): string[] {
+export function providerCacheTables(state: 3 | 4 | 5 | 6 | 7): string[] {
   return state >= 4 ? [...availabilityCacheTables, ...sweepTables] : [...availabilityCacheTables];
 }
 
 /** No ledger: accept only known inventories with their distinguishing bindings. */
-export async function catalogSchemaState(client: PoolClient): Promise<3 | 4 | 5 | 6> {
+export async function catalogSchemaState(client: PoolClient): Promise<3 | 4 | 5 | 6 | 7> {
   const tables = (await client.query("SELECT tablename FROM pg_tables WHERE schemaname='app' ORDER BY tablename"))
     .rows.map(row => row.tablename).join(",");
-  let state: 3 | 4 | 5 | 6 | null = tables === originalTables.join(",") ? 3 :
+  let state: 3 | 4 | 5 | 6 | 7 | null = tables === originalTables.join(",") ? 3 :
     tables === [...originalTables, ...sweepTables].sort().join(",") ? 4 :
       tables === currentTables.join(",") ? 5 : null;
   if (!state)
@@ -51,7 +51,17 @@ export async function catalogSchemaState(client: PoolClient): Promise<3 | 4 | 5 
     if (state !== 5 || providerGuard.table_name !== "streaming_provider_external_ids" ||
       providerGuard.proname !== "guard_watchmode_provider_mapping" || providerGuard.function_schema !== "app" ||
       providerGuard.tgenabled !== "O" || providerGuard.tgtype !== 27) throw new Error("upgrade_state_unknown");
-    state = currentMigrationCount;
+    state = 6;
+  }
+  const subject = (await client.query("SELECT 1 FROM information_schema.columns WHERE table_schema='app' AND table_name='movie_classifications' AND column_name='subject_classification_id' AND data_type='uuid'")).rowCount;
+  if (subject) {
+    const constraints = (await client.query(`SELECT conname,contype,convalidated,pg_get_constraintdef(oid) AS definition FROM pg_constraint
+      WHERE conrelid='app.movie_classifications'::regclass AND conname IN ('classification_subject_fk','classification_subject_not_self','classification_kind_parent')`)).rows;
+    const policy = (await client.query("SELECT qual FROM pg_policies WHERE schemaname='app' AND tablename='movie_classifications' AND policyname='shared_select'")).rows[0]?.qual;
+    if (state !== 6 || constraints.length !== 3 || constraints.some(c => !c.convalidated) ||
+      !constraints.some(c => c.contype === 'f' && /FOREIGN KEY \(subject_classification_id, movie_id\)/.test(c.definition) && /ON DELETE RESTRICT/.test(c.definition)) ||
+      typeof policy !== 'string' || !policy.includes('classification-evidence-v1') || !policy.includes("'model'")) throw new Error("upgrade_state_unknown");
+    state = 7;
   }
   const guard = state >= 5 ? "guard_provider_cache" : "guard_immutable_record";
   // pg_trigger bits: ROW=1, BEFORE=2, INSERT=4, DELETE=8, UPDATE=16.
