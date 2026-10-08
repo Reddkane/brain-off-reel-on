@@ -7,6 +7,8 @@ import { configIdentity } from "../../src/server/classification/orchestrator.ts"
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 let root = "", privateRoot = "";
 beforeAll(async () => {
+  // .cache is gitignored, so a fresh checkout (CI) does not have it.
+  await mkdir(join(repository, ".cache"), { recursive: true });
   root = await mkdtemp(join(repository, ".cache", "classification-entry-"));
   for (const part of ["src", "scripts", "config"]) await cp(join(repository, part), join(root, part), { recursive: true });
   privateRoot = join(root, ".cache", "classification", "private"); await mkdir(privateRoot, { recursive: true });
