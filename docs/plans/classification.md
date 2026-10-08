@@ -344,16 +344,19 @@ to CI metadata-database job; preserve existing jobs/checks. Unavailable Docker i
 unverified, not skipped pass; no retained upgrade. Plan-only checks are links/
 whitespace/state, not code/build/DB behavior.
 
-## 10. Pending decisions
+## 10. Phase B decisions
 
-| Decision | Before paid work |
+Decided 2026-10-08. Candidate token/time settings remain the section 11 candidate
+controls.
+
+| Decision | Outcome |
 | --- | --- |
-| D1 | Provider/≤2 models, verified prices, candidate token/time settings and phase caps. US$5/US$15 are withdrawn recommendations; use section 11 arithmetic. |
-| D2 | Confirm TMDB AI-use deferral covers personal noncommercial transmission; ingestion does not establish permission. |
-| D3 | ~30 known-film anchors at 1–2 minutes; ≤20 reviews at 2–3 minutes if familiar or 5–10 for evidence assessment: total 70–120 or 130–260 minutes. Set item/time budgets and unseen evidence-review versus defer/exclude; no rewatch assumption. |
+| D1 | Anthropic. Candidates `claude-sonnet-5-5` and `claude-opus-5-5`; Phase B hard cap US$35. Section 11 arithmetic at 5,000 input/10,500 output tokens, three attempts, 30 titles: Sonnet US$10.35 + Opus US$20.70 = US$31.05 worst case. Rates (Sonnet US$2/US$10, Opus US$4/US$20 per million) are from a 2026-09-25 cached table; re-verify live before the paid run and re-derive if they differ. |
+| D2 | The TMDB AI-use deferral covers personal noncommercial transmission for classification, on condition that the provider does not train on API inputs; confirm current provider terms before the paid run. Ingestion does not establish permission. |
+| D3 | Plan default: ~30 known-film anchors; at most 20 reviews (a ceiling, not a target). Phase C review budget is set after the Phase B flag rate is known. No rewatch assumption. |
 | D4 | No strict themes for now; tags do not satisfy requested strict exclusions. Revisit workload/evidence if named. |
-| D5 | Versioned complexity/attention caps 2; emotional cap undecided. No automatic relaxation/merge. |
-| D6 | Gating-only uncertainty plus supported model-parent reviews as effective labels; anchors calibration-only. Decide acceptable unseen evidence and skip/exclude behavior; inadequate evidence never means reassurance. |
+| D5 | Versioned caps: complexity 2, attention 2, emotional 2. Individual exceptions go through near-cap reviews, not cap relaxation. No automatic relaxation/merge. |
+| D6 | Gating-only uncertainty plus supported model-parent reviews as effective labels; anchors calibration-only. Unseen titles may be reviewed from a detailed synopsis (complexity/attention) or content guide (emotional only). Unresolved titles stay in the review queue and are never eligible; nothing is excluded permanently. Inadequate evidence never means reassurance. |
 
 ## 11. Deferred controls and later gates
 
