@@ -1,4 +1,4 @@
-import { burdens, fields, policyVersion, rubricVersion } from "./classification.ts";
+import { burdens, fields, phaseBPolicyVersion, rubricVersion } from "./classification.ts";
 import type { Burden, Revision, Scores } from "./classification.ts";
 import type { MovieId } from "./ids.ts";
 export interface LinkEvidence {
@@ -70,7 +70,7 @@ export function coverage(snapshot: Snapshot, at: string) {
     if (!current || !fresh(r, at) || gating(snapshot.emotionalCap).some(f => e.uncertainty[f] !== "low" || e.scores[f] === (f === "emotional_burden" ? snapshot.emotionalCap : 2) || e.scores[f] === (f === "emotional_burden" ? Number(snapshot.emotionalCap) : 2) + 1) ||
       (anchor && burdens.some(f => Math.abs(anchor.scores[f] - r.scores[f]) >= 2 || passes(anchor.scores, snapshot.emotionalCap) !== cap))) flagged++;
   }
-  return { policy: policyVersion, rubric: rubricVersion, active: active.length, classified, unclassified: active.length - classified, rejected: snapshot.rejected ?? 0, humanOnly,
+  return { policy: snapshot.policy, rubric: rubricVersion, active: active.length, classified, unclassified: active.length - classified, rejected: snapshot.rejected ?? 0, humanOnly,
     capPassing, capLinked, modelPassing, effectivePassing, flagged, flaggedFraction: active.length ? flagged / active.length : null, reviewed, linked, modelLinked, effectiveLinked, expired, stale, actions, uncertainty };
 }
 function ranks(values: readonly number[]): number[] {
@@ -83,11 +83,20 @@ function correlation(x: readonly number[], y: readonly number[]): number | null 
   const dx = x.map(v => v - mx), dy = y.map(v => v - my), denominator = Math.sqrt(dx.reduce((a, b) => a + b * b, 0) * dy.reduce((a, b) => a + b * b, 0));
   return denominator === 0 ? null : dx.reduce((a, b, i) => a + b * dy[i], 0) / denominator;
 }
-export function agreement(snapshot: Snapshot, at: string) {
-  const pairs = snapshot.movies.flatMap(m => {
+function agreementPairs(snapshot: Snapshot, at: string) {
+  return snapshot.movies.flatMap(m => {
     const a = latest(snapshot.revisions.filter(r => r.kind === "human_anchor" && r.movieId === m.id && r.rubric === snapshot.rubric && before(r, at)));
     const b = model(snapshot, m.id, at); return a && b && fresh(b, at) && m.inputFingerprint === b.fingerprint ? [{ a, b, title: m.title }] : [];
   });
+}
+export function compareAgreement(snapshots: readonly Snapshot[], at: string, seed = 20261008) {
+  const paired = snapshots.map(s => agreementPairs(s, at));
+  const common = paired[0]?.filter(p => paired.every(rows => rows.some(r => r.b.movieId === p.b.movieId && r.b.fingerprint === p.b.fingerprint && r.a.fingerprint === p.a.fingerprint))).map(p => p.b.movieId).sort() ?? [];
+  return { commonPairs: common.length, seed, candidates: snapshots.map(s => ({ modelId: s.modelId,
+    all: agreement(s, at, seed), common: agreement({ ...s, movies: common.flatMap(id => s.movies.filter(m => m.id === id)) }, at, seed) })) };
+}
+export function agreement(snapshot: Snapshot, at: string, seed = 20261008) {
+  const pairs = agreementPairs(snapshot, at);
   function metric(field: Burden, selected = pairs) {
     const n = selected.length, confusion = Array.from({ length: 5 }, () => Array<number>(5).fill(0));
     let exact = 0, withinOne = 0, observed = 0;
@@ -99,11 +108,30 @@ export function agreement(snapshot: Snapshot, at: string) {
   }
   const examples = ["The Red Balloon", "Paddington", "Back to the Future", "Memento", "Primer", "Shaun the Sheep Movie", "The Princess Bride", "Knives Out", "Tinker Tailor Soldier Spy", "The Many Adventures of Winnie the Pooh", "The Truman Show", "Manchester by the Sea", "Requiem for a Dream", "The Da Vinci Code", "Searching"];
   const excluded = pairs.filter(p => !examples.includes(p.title));
+  function bootstrap(selected = pairs) {
+    let state = seed >>> 0;
+    const values = burdens.map(() => Array<number>());
+    const replicates = 2000;
+    for (let replicate = 0; replicate < replicates && selected.length; replicate++) {
+      const sample = Array.from({ length: selected.length }, () => {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        return selected[Math.floor((state / 4294967296) * selected.length)];
+      });
+      burdens.forEach((field, i) => { const k = metric(field, sample).kappa; if (k !== null) values[i].push(k); });
+    }
+    return { method: "paired-title-percentile-lcg-v1", seed, replicates, n: selected.length,
+      attributes: Object.fromEntries(burdens.map((field, i) => {
+        const sorted = values[i].sort((a, b) => a - b), n = sorted.length;
+        return [field, { low: n ? sorted[Math.floor((n - 1) * .025)] : null, high: n ? sorted[Math.ceil((n - 1) * .975)] : null,
+          undefinedReplicates: replicates - n, reason: !selected.length ? "no_pairs" : !n ? "zero_expected_disagreement" : null }];
+      })) };
+  }
   return { pairs: pairs.length, candidates: snapshot.movies.length, unpaired: snapshot.movies.length - pairs.length,
     attributes: Object.fromEntries(burdens.map(f => [f, metric(f)])), exampleOverlap: pairs.length - excluded.length,
     withoutExamples: Object.fromEntries(burdens.map(f => [f, metric(f, excluded)])),
     spearman: { human: correlation(ranks(pairs.map(p => p.a.scores.narrative_complexity)), ranks(pairs.map(p => p.a.scores.attention_demand))),
       model: correlation(ranks(pairs.map(p => p.b.scores.narrative_complexity)), ranks(pairs.map(p => p.b.scores.attention_demand))) },
     disagreements: pairs.filter(p => Math.abs(p.a.scores.narrative_complexity - p.a.scores.attention_demand) >= 2 || Math.abs(p.b.scores.narrative_complexity - p.b.scores.attention_demand) >= 2 || passes(p.a.scores, snapshot.emotionalCap) !== passes(p.b.scores, snapshot.emotionalCap)).map(p => p.a.movieId),
-    caveat: "Sparse ordinal anchor agreement is descriptive; no bootstrap interval in Phase A." };
+    ...(snapshot.policy === phaseBPolicyVersion ? { bootstrap: bootstrap(), bootstrapWithoutExamples: bootstrap(excluded) } : {}),
+    caveat: snapshot.policy === phaseBPolicyVersion ? "Paired-title bootstrap intervals are descriptive; sparse selected anchors have selection bias and undefined replicates. They do not settle dimension merging." : "Sparse ordinal anchor agreement is descriptive; no bootstrap interval in Phase A." };
 }

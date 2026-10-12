@@ -8,15 +8,118 @@ import { decodeSnapshot } from "../../src/server/classification/files.ts";
 import { createPgStore } from "../../src/server/db/pg-store.ts";
 import { ingestAnchorIds } from "../../src/server/ingestion/anchor-metadata.ts";
 import { fixtures } from "../../tooling/metadata-fixtures.ts";
-import { movieId } from "../../src/server/providers/tmdb-validation.ts";
+import { movieId, tmdbId } from "../../src/server/providers/tmdb-validation.ts";
 import { fields } from "../../src/domain/classification.ts";
 import { coverage } from "../../src/domain/classification-reports.ts";
 import { catalogSchemaState } from "../../scripts/catalog-schema.ts";
 import { operatorCopy } from "./operator-process.ts";
-import { writeFile, mkdir, readFile } from "node:fs/promises";
+import { writeFile, mkdir, readFile, cp, access, unlink } from "node:fs/promises";
+import { hash } from "../../src/server/classification/codec.ts";
 import { join } from "node:path";
 import { createWatchmodeStore } from "../../src/server/db/watchmode-store.ts";
 import { createEvidenceStore } from "../../src/server/db/availability-evidence-store.ts";
+import { phaseBConfig, output as syntheticOutput } from "../classification/fixtures.ts";
+import { acquireRefreshLock } from "../../src/server/db/refresh-lock.ts";
+import { candidateId, decodePhaseB } from "../../src/server/classification/phase-b.ts";
+import { classificationEffects, defaultClassificationIO } from "../../scripts/classification-effects.ts";
+import pg from "pg";
+
+test("Phase B actual composition: fake Anthropic/TMDB, CLI pilot/main/import/export, guards and locks", { timeout: 240000 }, async t => {
+  await withDisposable(async db => {
+    const capability = {}, f = await fixtures(), metadata = createPgStore({ pool: db.pool, checkoutGuard: db.guard, catalogCapability: capability, operators: [] });
+    const ids: string[] = [];
+    for (const externalId of ["990011", "990012"]) {
+      const written = await metadata.persistMovie(capability, { ...f.movie, keys: [{ source: "tmdb", externalId: tmdbId(externalId) }] }, 1000, { signal: db.signal, deadline: Date.now() + 10000 });
+      assert("movieId" in written); ids.push(written.movieId);
+    }
+    await t.test("store batch guards reject missing/foreign capabilities, retired and expired inputs", async () => {
+      const store = createClassificationStore({ pool: db.pool, guard: db.guard, capability }), ctx = { signal: db.signal, deadline: Date.now() + 10000 };
+      await assert.rejects(store.inputs({}, ids.map(movieId), ctx), /unauthorized/);
+      assert.equal((await store.inputs(capability, ids.map(movieId), ctx)).length, 2);
+      await db.admin.query("UPDATE app.movies SET metadata_state='retired' WHERE id=$1", [ids[0]]);
+      await assert.rejects(store.inputs(capability, ids.map(movieId), ctx), /anchor_movie_unresolved/);
+      await db.admin.query("UPDATE app.movies SET metadata_state='active',metadata_refreshed_at='2020-01-01' WHERE id=$1", [ids[0]]);
+      await assert.rejects(store.inputs(capability, ids.map(movieId), ctx), /evidence_expired/);
+      await db.admin.query("UPDATE app.movies SET metadata_refreshed_at=clock_timestamp() WHERE id=$1", [ids[0]]);
+    });
+    await t.test("classification session lock refuses overlap, detects loss, and leaves shared refresh key independent", async () => {
+      const first = await acquireRefreshLock(db.pool, db.guard, db.signal, [1112494674, 2]);
+      try {
+        await assert.rejects(acquireRefreshLock(db.pool, db.guard, db.signal, [1112494674, 2]), /refresh_overlap/);
+        const refresh = await acquireRefreshLock(db.pool, db.guard, db.signal); await refresh.release();
+        await first.check();
+      } finally { await first.release(); }
+      const cancelled = new AbortController(); const lock = await acquireRefreshLock(db.pool, db.guard, cancelled.signal, [1112494674, 2]); cancelled.abort();
+      await assert.rejects(lock.check(), /refresh_lock_lost/); await lock.release();
+    });
+    const copy = await operatorCopy();
+    try {
+      const privateRoot = join(copy.root, ".cache/classification/private"); await mkdir(privateRoot, { recursive: true });
+      await cp(join(copy.root, "scripts/classification-effects.ts"), join(copy.root, "scripts/classification-composition.ts"));
+      const connection = { host: db.pool.options.host, port: db.pool.options.port, database: db.pool.options.database, user: db.pool.options.user, password: db.pool.options.password, max: 3, connectionTimeoutMillis: 5000, query_timeout: 10000, allowExitOnIdle: true };
+      await writeFile(join(copy.root, "scripts/classification-effects.ts"), `
+        import pg from 'pg'; import { classificationEffects as compose } from './classification-composition.ts';
+        import { disposableGuard } from '../tooling/metadata-disposable.ts';
+        globalThis.fetch = async () => { throw new Error('network_forbidden'); };
+        const raw = ${JSON.stringify(f.raw)}; const labels = ${JSON.stringify(syntheticOutput())};
+        export async function classificationEffects(options) { return compose(options, {
+          inspect:async()=>{}, password:async()=> 'synthetic', pool:()=>new pg.Pool(${JSON.stringify(connection)}), guard:disposableGuard,
+          key:async()=> 'synthetic-key', tmdbToken:async()=> 'synthetic-token',
+          anthropic:{now:Date.now,fetch:async(url,init)=>{ const body=JSON.parse(init.body);
+            return new Response(JSON.stringify(String(url).endsWith('count_tokens') ? {input_tokens:1000} : {
+              type:'message',role:'assistant',model:body.model,stop_reason:'end_turn',content:[{type:'text',text:JSON.stringify(labels)}],
+              usage:{input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0,service_tier:'standard'} })); }},
+          metadata:{sleep:async()=>{},fetch:async(url)=>{ const id=Number(new URL(String(url)).pathname.split('/').at(-1));
+            return new Response(JSON.stringify({...raw,id,release_dates:{...raw.release_dates,id},keywords:{...raw.keywords,id},credits:{...raw.credits,id},external_ids:{...raw.external_ids,id}})); }}
+        }); }
+      `);
+      const config = { ...phaseBConfig(), movieIds: ids }; await writeFile(join(privateRoot, "pilot.json"), JSON.stringify(config));
+      await t.test("actual pilot CLI composes guarded pool and appends four measured models; report is exclusive", async () => {
+        const result = await copy.run("classification.ts", ["run", "--config", join(privateRoot, "pilot.json"), "--live"]);
+        assert.equal(result.code, 0, result.stdout + result.stderr); assert.equal(result.stderr, "");
+        const report = JSON.parse(await readFile(join(privateRoot, config.report), "utf8")); assert.equal(report.processed, 4); assert.equal(report.actual, 42000);
+        const before = (await db.admin.query("SELECT count(*)::int AS n FROM app.movie_classifications")).rows[0].n;
+        assert.equal((await copy.run("classification.ts", ["run", "--config", join(privateRoot, "pilot.json"), "--live"])).code, 1);
+        assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM app.movie_classifications")).rows[0].n, before);
+      });
+      await t.test("fresh rerun refuses existing phase, including missing phase pointer, without reserving a report name", async () => {
+        await writeFile(join(privateRoot, "fresh.json"), JSON.stringify({ ...config, report: "fresh-result.json" }));
+        const result = await copy.run("classification.ts", ["run", "--config", join(privateRoot, "fresh.json"), "--live"]);
+        assert.equal(result.code, 1); assert.match(result.stdout, /code=prior_report_required/);
+        await assert.rejects(access(join(privateRoot, "fresh-result.json")), { code: "ENOENT" });
+        const pointerPath = join(privateRoot, `phase-head-${hash(config.phaseId)}.json`), pointer = await readFile(pointerPath);
+        try {
+          await unlink(pointerPath);
+          const withoutPointer = await copy.run("classification.ts", ["run", "--config", join(privateRoot, "fresh.json"), "--live"]);
+          assert.equal(withoutPointer.code, 1); assert.match(withoutPointer.stdout, /code=prior_report_required/);
+        } finally { await writeFile(pointerPath, pointer, { mode: 0o600 }); }
+        const store = createClassificationStore({ pool: db.pool, guard: db.guard, capability });
+        assert.equal(await store.phaseHasModels(capability, config.phaseId, config.candidates.map(c => c.model), { signal: db.signal, deadline: Date.now() + 10000 }), true);
+        assert.equal(await store.phaseHasModels(capability, "different-phase", config.candidates.map(c => c.model), { signal: db.signal, deadline: Date.now() + 10000 }), false);
+        assert.equal((await store.phaseCompleted(capability, config.phaseId, { signal: db.signal, deadline: Date.now() + 10000 })).length, 4);
+      });
+      await t.test("main CLI carries pilot spend, skips finished pairs and exported v2 caps are checked", async () => {
+        await writeFile(join(privateRoot, "main.json"), JSON.stringify({ ...config, stage: "main", pilotReport: config.report, report: "main-report.json", continuation: true }));
+        const result = await copy.run("classification.ts", ["run", "--config", join(privateRoot, "main.json"), "--prior-report", join(privateRoot, config.report), "--live"]); assert.equal(result.code, 0, result.stdout + result.stderr);
+        const report = JSON.parse(await readFile(join(privateRoot, "main-report.json"), "utf8"));
+        assert.equal(report.actual, 42000); assert.equal(report.calls, 0); assert.equal(report.skipped, 4);
+        const model = candidateId(decodePhaseB(config).candidates[0]);
+        const exported = await copy.run("classification.ts", ["export", "--read-local", "--phase-b", "--model-id", model, "--as-of", new Date().toISOString(), "--output", join(privateRoot, "phase-b-snapshot.json")]);
+        assert.equal(exported.code, 0, exported.stdout + exported.stderr);
+        const snapshot = decodeSnapshot(JSON.parse(await readFile(join(privateRoot, "phase-b-snapshot.json"), "utf8"))); assert.equal(snapshot.emotionalCap, 2); assert.equal(snapshot.policy, "classification-report-v2");
+      });
+      await t.test("anchor live CLI uses the real metadata pipeline with a fake detail response and no personal writes", async () => {
+        await writeFile(join(privateRoot, "ids.json"), JSON.stringify({ version: "classification-anchor-ids-v1", ids: ["990013"] }));
+        await writeFile(join(privateRoot, "anchor-config.json"), JSON.stringify({ version: "classification-anchor-live-v1", terms: { url: "https://www.themoviedb.org/terms-of-use", checkedAt: new Date().toISOString(), accepted: true }, report: "additions.json" }));
+        const result = await copy.run("classification.ts", ["anchors-ingest", "--input", join(privateRoot, "ids.json"), "--config", join(privateRoot, "anchor-config.json"), "--live"]);
+        assert.equal(result.code, 0, result.stdout + result.stderr);
+        const additions = JSON.parse(await readFile(join(privateRoot, "additions.json"), "utf8")); assert.equal(additions.inserted, 1);
+        assert.equal((await db.admin.query("SELECT metadata_state FROM app.movies WHERE id=$1", [additions.additions[0]])).rows[0].metadata_state, "active");
+        assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM app.profile_movies")).rows[0].n, 0);
+      });
+    } finally { await copy.cleanup(); }
+  }, { fixtures: false });
+});
 test("classification migration: real same-movie parents and operator-only human labels", { timeout: 240000 }, async t => {
   await withDisposable(async db => {
     const movie = "30000000-0000-4000-8000-000000000001";
@@ -173,6 +276,12 @@ test("classification production paths: metadata-only creation, effective reviews
 });
 test("six-to-seven classification upgrade preserves actual legacy rows", { timeout: 240000 }, async () => {
   await withDisposable(async db => {
+    let keyReads = 0;
+    await assert.rejects(classificationEffects({ action: "anchors-import", signal: db.signal }, { ...defaultClassificationIO,
+      inspect: async () => {}, password: async () => "synthetic", guard: db.guard,
+      pool: () => new pg.Pool({ host: db.pool.options.host, port: db.pool.options.port, database: db.pool.options.database, user: db.pool.options.user, password: db.pool.options.password }),
+      key: async () => { keyReads++; throw new Error("provider_forbidden"); } }), /upgrade_required/);
+    assert.equal(keyReads, 0);
     const before = (await db.admin.query("SELECT id,to_jsonb(c) AS row FROM app.movie_classifications c ORDER BY id")).rows;
     assert(before.length > 0); await db.upgrade();
     const after = (await db.admin.query("SELECT id,to_jsonb(c)-'subject_classification_id' AS row FROM app.movie_classifications c ORDER BY id")).rows;

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import type { StoreContext } from "./metadata-store.ts";
-import { burdens, ClassificationError, policyVersion, promptVersion, rubricVersion, text, validateOutput } from "../../domain/classification.ts";
+import { burdens, ClassificationError, policyVersion, phaseBPolicyVersion, promptVersion, rubricVersion, text, validateOutput } from "../../domain/classification.ts";
 import type { Output, Revision } from "../../domain/classification.ts";
 import type { MovieId } from "../../domain/ids.ts";
 import type { Snapshot } from "../../domain/classification-reports.ts";
@@ -39,9 +39,9 @@ export function createClassificationStore(options: { pool: Pool; guard: (client:
     } catch (e) { if (begun && !released) await client.query("ROLLBACK").catch(() => { destroy = true; }); throw e; }
     finally { clearTimeout(timer); ctx.signal.removeEventListener("abort", abort); client.off("error", abort); if (!released) client.release(destroy); }
   }
-  async function insert(client: PoolClient, r: Revision, output?: Output, availablePaths: readonly string[] = []) {
+  async function insert(client: PoolClient, r: Revision, output?: Output, availablePaths: readonly string[] = [], phaseId?: string) {
     const envelope = { version: "classification-evidence-v1", kind: r.kind, action: r.action, evidence: r.evidence,
-      evidenceExpiresAt: r.evidenceExpiresAt, availablePaths };
+      evidenceExpiresAt: r.evidenceExpiresAt, availablePaths, ...(phaseId ? { phaseId } : {}) };
     const provenance = output?.field_provenance ?? Object.fromEntries(burdens.map(f => [f, { basis: ["human"], evidence_refs: [] }]));
     await client.query(`INSERT INTO app.movie_classifications(id,movie_id,rubric_version,narrative_complexity,attention_demand,emotional_burden,on_screen_text_dependence,
       pacing,tone,content_tags,field_provenance,field_uncertainty,input_evidence,input_fingerprint,model_id,prompt_id,review_status,subject_classification_id,created_at)
@@ -89,8 +89,9 @@ export function createClassificationStore(options: { pool: Pool; guard: (client:
         return { inserted, unchanged };
       });
     },
-    async appendModel(capability: object, id: MovieId, output: unknown, modelId: string, expectedFingerprint: string, ctx: StoreContext) {
+    async appendModel(capability: object, id: MovieId, output: unknown, modelId: string, expectedFingerprint: string, ctx: StoreContext, phaseId?: string) {
       text(modelId, 96);
+      if (phaseId !== undefined) text(phaseId, 96);
       return transaction(capability, ctx, async client => {
         const row = (await client.query(metadataSelect + " WHERE m.id=$1 FOR SHARE", [id])).rows[0];
         if (!row) throw new ClassificationError("anchor_movie_unresolved");
@@ -99,7 +100,7 @@ export function createClassificationStore(options: { pool: Pool; guard: (client:
         const r: Revision = { id: rid, movieId: id, rubric: rubricVersion, kind: "model", scores: valid, uncertainty: valid.field_uncertainty,
           createdAt: new Date().toISOString(), fingerprint: prepared.fingerprint, modelId, promptId: promptVersion, parent: null, action: null, evidence: {},
           evidenceExpiresAt: new Date(calendarMonths(new Date(row.metadata_refreshed_at).getTime(), 6)).toISOString() };
-        await insert(client, r, valid, Object.entries(prepared.input).filter(([k, v]) => k !== "truncated" && v !== null && v !== "" && (!Array.isArray(v) || v.length)).map(([k]) => k)); return rid;
+        await insert(client, r, valid, Object.entries(prepared.input).filter(([k, v]) => k !== "truncated" && v !== null && v !== "" && (!Array.isArray(v) || v.length)).map(([k]) => k), phaseId); return rid;
       });
     },
     async input(capability: object, id: MovieId, ctx: StoreContext) {
@@ -108,7 +109,42 @@ export function createClassificationStore(options: { pool: Pool; guard: (client:
         if (!row) throw new ClassificationError("anchor_movie_unresolved"); return prepareInput(row);
       });
     },
-    async snapshot(capability: object, at: string, modelId: string, ctx: StoreContext): Promise<Snapshot> {
+    async inputs(capability: object, ids: readonly MovieId[], ctx: StoreContext) {
+      if (!ids.length || ids.length > 30 || new Set(ids).size !== ids.length) throw new ClassificationError("invalid_input");
+      return transaction(capability, ctx, async client => {
+        const rows = (await client.query(metadataSelect + " WHERE m.id=ANY($1::uuid[]) AND m.metadata_state='active' ORDER BY m.id", [ids])).rows;
+        if (rows.length !== ids.length) throw new ClassificationError("anchor_movie_unresolved");
+        if (rows.some(r => calendarMonths(new Date(r.metadata_refreshed_at).getTime(), 6) <= Date.now())) throw new ClassificationError("evidence_expired");
+        // Preserve the operator's ordered selection; no personal joins.
+        return ids.map(id => rows.find(r => r.id === id));
+      }, true);
+    },
+    async phaseHasModels(capability: object, phaseId: string, models: readonly string[], ctx: StoreContext) {
+      text(phaseId, 96); models.forEach(m => text(m, 32));
+      return transaction(capability, ctx, async client => {
+        const result = await client.query(`SELECT EXISTS(SELECT 1 FROM app.movie_classifications
+          WHERE input_evidence->>'kind'='model' AND (input_evidence->>'phaseId'=$1 OR
+            (input_evidence->>'phaseId' IS NULL AND split_part(model_id,':',1)=ANY($2::text[])))) AS present`, [phaseId, models]);
+        return result.rows[0]?.present !== false;
+      }, true);
+    },
+    async phaseCompleted(capability: object, phaseId: string, ctx: StoreContext) {
+      text(phaseId, 96);
+      return transaction(capability, ctx, async client => {
+        const rows = (await client.query("SELECT * FROM app.movie_classifications WHERE input_evidence->>'kind'='model' AND input_evidence->>'phaseId'=$1 LIMIT 1001", [phaseId])).rows;
+        if (rows.length > 1000) throw new ClassificationError("body_limit");
+        const completed = new Map<string, { movieId: MovieId; candidate: string; fingerprint: string }>();
+        for (const raw of rows) {
+          let revision: Revision; try { revision = decodeStoredRevision(raw); } catch { continue; }
+          if (revision.modelId && (revision.evidenceExpiresAt === null || Date.parse(revision.evidenceExpiresAt) > Date.now())) {
+            const row = { movieId: revision.movieId, candidate: revision.modelId, fingerprint: revision.fingerprint };
+            completed.set(`${row.movieId}/${row.candidate}/${row.fingerprint}`, row);
+          }
+        }
+        return [...completed.values()];
+      }, true);
+    },
+    async snapshot(capability: object, at: string, modelId: string, ctx: StoreContext, phaseB = false): Promise<Snapshot> {
       return transaction(capability, ctx, async client => {
         const movies = (await client.query("SELECT id,title,metadata_state,metadata_refreshed_at,metadata_source FROM app.movies ORDER BY id LIMIT 1001")).rows;
         const inputs = (await client.query(metadataSelect + " ORDER BY m.id LIMIT 1001")).rows;
@@ -130,7 +166,7 @@ export function createClassificationStore(options: { pool: Pool; guard: (client:
         const deadlines = [...movies.filter(m => m.metadata_source === "tmdb").map(m => calendarMonths(new Date(m.metadata_refreshed_at).getTime(), 6)), ...links.map(l => new Date(l.expires_at).getTime())];
         const retentionDeadline = new Date(deadlines.length ? Math.min(...deadlines) : Date.parse(at) + 86400000).toISOString();
         if (Date.parse(retentionDeadline) <= Date.now()) throw new ClassificationError("evidence_expired");
-        return { version: "classification-snapshot-v1", rubric: rubricVersion, policy: policyVersion, modelId, promptId: promptVersion, emotionalCap: null,
+        return { version: "classification-snapshot-v1", rubric: rubricVersion, policy: phaseB ? phaseBPolicyVersion : policyVersion, modelId, promptId: promptVersion, emotionalCap: phaseB ? 2 : null,
           rejected: raw.length - revisions.length, retentionDeadline,
           movies: movies.map(m => ({ id: movieId(m.id), title: m.title.slice(0, 300), active: m.metadata_state === "active", inputFingerprint: fingerprints.get(m.id) ?? null, links: links.filter(l => l.movie_id === m.id).map(l => ({
             checkedAt: iso(l.checked_at), promotedAt: l.completed ? iso(l.completed) : null, membershipAt: l.observed_at ? iso(l.observed_at) : null,

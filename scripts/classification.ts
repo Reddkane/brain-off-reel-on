@@ -2,26 +2,29 @@ import { pathToFileURL } from "node:url";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { safePrivateDirectory } from "./private-directory.ts";
-import { ClassificationError } from "../src/domain/classification.ts";
-import { coverage, agreement } from "../src/domain/classification-reports.ts";
+import { ClassificationError, text } from "../src/domain/classification.ts";
+import { SweepError } from "../src/server/providers/sweep-error.ts";
+import { coverage, agreement, compareAgreement } from "../src/domain/classification-reports.ts";
 import { decodeJson } from "../src/server/classification/codec.ts";
 import { date, decodeHuman, decodeSnapshot, template } from "../src/server/classification/files.ts";
 import { decodeRunConfig, phaseBalance } from "../src/server/classification/orchestrator.ts";
 import { decodeAnchorIds } from "../src/server/ingestion/anchor-metadata.ts";
 import { classificationEffects } from "./classification-effects.ts";
+import { decodeAnchorConfig, decodePhaseB } from "../src/server/classification/phase-b.ts";
 import type { ClassificationEffects } from "./classification-effects.ts";
 
 const allowed: Record<string, readonly string[]> = {
   "anchors-template": ["--output", "--write"], "reviews-template": ["--output", "--write"],
   "anchors-import": ["--input", "--apply"], "reviews-import": ["--input", "--apply"],
   "anchors-ingest": ["--input", "--config", "--live"], run: ["--config", "--prior-report", "--live"],
-  agreement: ["--input", "--as-of", "--write-report", "--output"], coverage: ["--input", "--as-of", "--write-report", "--output"],
-  export: ["--as-of", "--read-local", "--output"],
+  agreement: ["--input", "--compare-with", "--as-of", "--write-report", "--output"], coverage: ["--input", "--as-of", "--write-report", "--output"],
+  export: ["--as-of", "--read-local", "--output", "--model-id", "--phase-b"],
 };
-const booleans = ["--write", "--apply", "--live", "--read-local", "--write-report"];
+const booleans = ["--write", "--apply", "--live", "--read-local", "--write-report", "--phase-b"];
 const codes = new Set(["invalid_input", "invalid_arguments", "invalid_json", "body_limit", "private_path_required", "report_exists", "file_failed",
   "classifier_unconfigured", "anchor_ingest_live_unavailable", "local_store_unconfigured", "prior_report_required", "prior_report_mismatch", "unauthorized",
-  "anchor_movie_unresolved", "review_parent_invalid", "readback_failed", "cancelled", "deadline", "call_limit", "spend_cap", "spend_unknown", "database_failed", "evidence_expired", "input_changed", "backoff_failed"]);
+  "anchor_movie_unresolved", "review_parent_invalid", "readback_failed", "cancelled", "deadline", "call_limit", "spend_cap", "spend_unknown", "database_failed", "evidence_expired", "input_changed", "backoff_failed",
+  "terms_required", "rates_required", "billing_check_required", "pilot_report_required", "count_overhead_required", "count_failed", "input_oversized", "pilot_input_oversized", "credential_invalid", "model_mismatch", "upgrade_required", "refresh_overlap", "refresh_lock_lost", "timeout", "phase_state_invalid", "phase_report_pending"]);
 function flags(args: readonly string[]) {
   const action = args[0], permitted = allowed[action]; if (!permitted) throw new ClassificationError("invalid_arguments");
   const values: Record<string, string | boolean> = {};
@@ -73,7 +76,7 @@ export async function classificationCommand(args: string[], signal = new AbortCo
   let resolvedEffects: ClassificationEffects | undefined;
   try {
     const parsed = flags(args); action = parsed.action; const v = parsed.values;
-    const effects = async () => { resolvedEffects ??= supplied ?? await classificationEffects(); return resolvedEffects; };
+    const effects = async () => { resolvedEffects ??= supplied ?? await classificationEffects({ action, signal, modelId: typeof v["--model-id"] === "string" ? v["--model-id"] : undefined }); return resolvedEffects; };
     signal.throwIfAborted();
     if (action.endsWith("-template")) {
       const blank = template(action === "anchors-template" ? "human_anchor" : "human_review");
@@ -83,37 +86,57 @@ export async function classificationCommand(args: string[], signal = new AbortCo
       if (v["--apply"]) { const io = await effects(); if (!io.store || !io.capability) throw new ClassificationError("local_store_unconfigured");
         const result = await io.store.appendHuman(io.capability, document, { signal, deadline: Date.now() + 10000 }); processed = result.inserted + result.unchanged; }
     } else if (action === "anchors-ingest") {
-      if (v["--live"]) throw new ClassificationError("anchor_ingest_live_unavailable");
+      if (v["--live"] && (!v["--config"] || !v["--input"])) throw new ClassificationError("anchor_ingest_live_unavailable");
       processed = decodeAnchorIds(await read(required(v, "--input"), 16384)).length;
-      if (v["--config"]) decodeRunConfig(await read(required(v, "--config"), 16384, true));
+      if (v["--config"]) {
+        const config = await read(required(v, "--config"), 16384, true);
+        if (v["--live"]) { decodeAnchorConfig(config); const io = await effects(); if (!io.ingest) throw new ClassificationError("anchor_ingest_live_unavailable");
+          const result = await io.ingest(await read(required(v, "--input"), 16384), config, signal); processed = result.inserted + result.unchanged; }
+        else if (config && typeof config === "object" && "version" in config && config.version === "classification-anchor-live-v1") decodeAnchorConfig(config);
+        else decodeRunConfig(config);
+      }
     } else if (action === "run") {
       if (v["--live"] && !v["--config"]) throw new ClassificationError("classifier_unconfigured");
-      const config = decodeRunConfig(await read(required(v, "--config"), 16384, true));
-      let prior: unknown;
-      if (config.continuation && !v["--prior-report"]) throw new ClassificationError("prior_report_required");
-      if (v["--prior-report"]) {
-        try { prior = await read(required(v, "--prior-report"), 16384); } catch { throw new ClassificationError("prior_report_mismatch"); }
+      const rawConfig = await read(required(v, "--config"), 16384, true);
+      if (rawConfig && typeof rawConfig === "object" && "version" in rawConfig && rawConfig.version === "classification-phase-b-v1") {
+        const config = decodePhaseB(rawConfig); let prior: unknown;
+        if (config.continuation && !v["--prior-report"]) throw new ClassificationError("prior_report_required");
+        if (v["--prior-report"]) prior = await read(required(v, "--prior-report"), 262144);
+        if (v["--live"]) { const io = await effects(); if (!io.phaseB) throw new ClassificationError("classifier_unconfigured");
+          const result = await io.phaseB(config, prior, signal); processed = result.processed; rejected = result.rejected; code = result.code; exit = code === "complete" ? 0 : ["partial", "cancelled", "deadline", "spend_cap", "spend_unknown"].includes(code) ? 2 : 1; }
+      } else {
+        const config = decodeRunConfig(rawConfig);
+        let prior: unknown;
+        if (config.continuation && !v["--prior-report"]) throw new ClassificationError("prior_report_required");
+        if (v["--prior-report"]) {
+          try { prior = await read(required(v, "--prior-report"), 16384); } catch { throw new ClassificationError("prior_report_mismatch"); }
+        }
+        const balance = phaseBalance(config, prior);
+        if (v["--live"]) throw new ClassificationError("classifier_unconfigured");
+        // Legacy synthetic composition remains available; default returns no effects.
+        const io = supplied ?? await classificationEffects(); resolvedEffects = io;
+        const startingUnknown = prior && typeof prior === "object" && "unknown" in prior && typeof prior.unknown === "number" ? prior.unknown : 0;
+        if (io.run) { const result = await io.run(config, balance, signal, startingUnknown); processed = result.processed; rejected = result.rejected; code = result.code; exit = code === "complete" ? 0 : 2; }
       }
-      const balance = phaseBalance(config, prior);
-      const io = await effects();
-      if (v["--live"]) throw new ClassificationError("classifier_unconfigured");
-      const startingUnknown = prior && typeof prior === "object" && "unknown" in prior && typeof prior.unknown === "number" ? prior.unknown : 0;
-      if (io.run) { const result = await io.run(config, balance, signal, startingUnknown); processed = result.processed; rejected = result.rejected; code = result.code; exit = code === "complete" ? 0 : 2; }
     } else if (action === "export") {
       const at = date(required(v, "--as-of"));
+      if (v["--model-id"]) text(required(v, "--model-id"), 96);
       if (v["--read-local"]) { const io = await effects(); if (!io.store || !io.capability || !io.modelId) throw new ClassificationError("local_store_unconfigured");
-        const snapshot = await io.store.snapshot(io.capability, at, io.modelId, { signal, deadline: Date.now() + 10000 });
+        const snapshot = await io.store.snapshot(io.capability, at, io.modelId, { signal, deadline: Date.now() + 10000 }, !!v["--phase-b"]);
         await write(required(v, "--output"), decodeSnapshot(snapshot)); processed = snapshot.movies.length; }
     } else {
       const at = date(required(v, "--as-of")), snapshot = decodeSnapshot(await read(required(v, "--input"), 16 * 1024 * 1024));
       if (snapshot.retentionDeadline && Date.parse(snapshot.retentionDeadline) <= Date.now()) throw new ClassificationError("evidence_expired");
-      const report = action === "coverage" ? coverage(snapshot, at) : agreement(snapshot, at); processed = snapshot.movies.length;
+      const second = v["--compare-with"] ? decodeSnapshot(await read(required(v, "--compare-with"), 16 * 1024 * 1024)) : null;
+      if (second && (second.policy !== snapshot.policy || second.emotionalCap !== snapshot.emotionalCap || second.promptId !== snapshot.promptId || second.modelId === snapshot.modelId || (second.retentionDeadline && Date.parse(second.retentionDeadline) <= Date.now()))) throw new ClassificationError("invalid_input");
+      const report = action === "coverage" ? coverage(snapshot, at) : second ? compareAgreement([snapshot, second], at) : agreement(snapshot, at); processed = snapshot.movies.length;
       if (v["--write-report"]) await write(required(v, "--output"), report);
       if (action === "agreement" && "pairs" in report && !report.pairs) { exit = 2; code = "insufficient_data"; }
+      if ("commonPairs" in report && !report.commonPairs) { exit = 2; code = "insufficient_data"; }
     }
     signal.throwIfAborted();
   } catch (e) {
-    exit = signal.aborted ? 2 : 1; code = signal.aborted ? "cancelled" : e instanceof ClassificationError && codes.has(e.code) ? e.code : "file_failed"; rejected++;
+    exit = signal.aborted ? 2 : 1; code = signal.aborted ? "cancelled" : (e instanceof ClassificationError || e instanceof SweepError) && codes.has(e.code) ? e.code : "file_failed"; rejected++;
   } finally {
     try { await resolvedEffects?.close?.(); } catch { exit = 1; code = "database_failed"; }
   }

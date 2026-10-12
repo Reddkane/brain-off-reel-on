@@ -30,7 +30,7 @@ export function phaseBalance(value: unknown, prior?: unknown): number {
 export function configIdentity(config: RunConfig): string { return hash({ ...decodeRunConfig(config), continuation: false }); }
 export interface Classifier {
   classify(input: Projected, context: { signal: AbortSignal; deadline: number; candidate: string }): Promise<
-    { status: "ok"; output: unknown; actualCost: number | null } | { status: "failed"; retryable: boolean; cost: number | null }>;
+    { status: "ok"; output: unknown; actualCost: number | null } | { status: "failed"; retryable: boolean; cost: number | null; reason?: string; retryAfterMs?: number }>;
 }
 export interface TokenCounter { count(prompt: string, candidate: string): number }
 export async function classifyBounded(options: {
