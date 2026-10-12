@@ -7,7 +7,7 @@ export interface RefreshLock {
   release(): Promise<void>;
 }
 /** One application-wide key shared by manual ingestion and availability work. */
-export async function acquireRefreshLock(pool: Pool, guard: (client: PoolClient) => Promise<void>, signal: AbortSignal): Promise<RefreshLock> {
+export async function acquireRefreshLock(pool: Pool, guard: (client: PoolClient) => Promise<void>, signal: AbortSignal, key: readonly [number, number] = [1112494674, 1]): Promise<RefreshLock> {
   signal.throwIfAborted();
   const client = await pool.connect(), lost = new AbortController();
   let held = false, released = false;
@@ -30,7 +30,7 @@ export async function acquireRefreshLock(pool: Pool, guard: (client: PoolClient)
       throw new SweepError("target_guard");
     }
     signal.throwIfAborted();
-    const result = await client.query("SELECT pg_try_advisory_lock(1112494674,1) AS locked");
+    const result = await client.query("SELECT pg_try_advisory_lock($1,$2) AS locked", [...key]);
     if (lost.signal.aborted)
       throw new SweepError("refresh_lock_lost");
     if (result.rows[0]?.locked !== true)
@@ -86,7 +86,7 @@ export async function acquireRefreshLock(pool: Pool, guard: (client: PoolClient)
       const timeout = setTimeout(abort, 5000);
       try {
         if (!released && held)
-          await client.query("SELECT pg_advisory_unlock(1112494674,1)");
+          await client.query("SELECT pg_advisory_unlock($1,$2)", [...key]);
       }
       catch {
         abort();

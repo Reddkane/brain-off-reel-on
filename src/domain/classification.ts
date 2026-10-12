@@ -3,6 +3,7 @@ import type { MovieId } from "./ids.ts";
 export const rubricVersion = "low-brain-v1";
 export const promptVersion = "classification-v1";
 export const policyVersion = "classification-report-v1";
+export const phaseBPolicyVersion = "classification-report-v2";
 export type Burden = "narrative_complexity" | "attention_demand" | "emotional_burden" | "on_screen_text_dependence";
 export type Field = Burden | "pacing" | "tone" | "content_tags";
 export const burdens: readonly Burden[] = ["narrative_complexity", "attention_demand", "emotional_burden", "on_screen_text_dependence"];

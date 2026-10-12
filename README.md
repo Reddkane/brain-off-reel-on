@@ -29,6 +29,13 @@ See [the approved scope](docs/plans/classification.md) and
 [implementation evidence](docs/plans/classification-implementation.md).
 No classifier or metadata calls are enabled by this phase.
 
+Classification Phase B is implemented on its uncommitted feature branch: native
+Anthropic request/counting adapter, pilot/main controls, guarded local composition,
+anchor details and report intervals. See the [amended plan](docs/plans/classification-phase-b.md),
+[operator workflow](docs/classification-operator.md) and
+[implementation evidence](docs/plans/classification-phase-b-implementation.md).
+Live execution, paid calls and retained writes require separate user authorization.
+
 See [the architecture plan](docs/architecture.md) for the product scope, data model, recommendation approach, evaluation protocol, work-area roadmap, and recommended coding models.
 
 Before implementation, read [AGENTS.md](AGENTS.md), the [engineering standards and release gates](docs/engineering.md), the [schema evidence](docs/plans/pr-02-schema.md), and the [metadata plan and evidence](docs/plans/pr-03-metadata.md).

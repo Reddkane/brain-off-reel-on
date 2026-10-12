@@ -1,4 +1,4 @@
-import { array, burdens, choice, ClassificationError, exact, integer, record, rubricVersion, policyVersion, scores, text, uncertainties, validateOutput } from "../../domain/classification.ts";
+import { array, burdens, choice, ClassificationError, exact, integer, record, rubricVersion, policyVersion, phaseBPolicyVersion, scores, text, uncertainties, validateOutput } from "../../domain/classification.ts";
 import type { Burden, Revision, ReviewEvidence, Scores, Uncertainty } from "../../domain/classification.ts";
 import type { MovieId, TmdbMovieId } from "../../domain/ids.ts";
 import type { Snapshot } from "../../domain/classification-reports.ts";
@@ -70,7 +70,7 @@ export function decodeRevision(value: unknown): Revision {
 function bool(v: unknown): boolean { if (typeof v !== "boolean") throw new ClassificationError("invalid_input"); return v; }
 export function decodeSnapshot(value: unknown): Snapshot {
   const r = record(value); exact(r, ["version", "modelId", "promptId", "rubric", "policy", "emotionalCap", "movies", "revisions", "rejected", "retentionDeadline"]);
-  if (r.version !== "classification-snapshot-v1" || r.rubric !== rubricVersion || r.policy !== policyVersion) throw new ClassificationError("invalid_input");
+  if (r.version !== "classification-snapshot-v1" || r.rubric !== rubricVersion || ![policyVersion, phaseBPolicyVersion].includes(String(r.policy)) || (r.policy === phaseBPolicyVersion && r.emotionalCap !== 2)) throw new ClassificationError("invalid_input");
   const movies = array(r.movies, 1000).map(raw => {
     const m = record(raw); exact(m, ["id", "active", "title", "inputFingerprint", "links"]);
     const fp = m.inputFingerprint === null ? null : text(m.inputFingerprint, 64);
@@ -82,7 +82,7 @@ export function decodeSnapshot(value: unknown): Snapshot {
   });
   const revisions = array(r.revisions, 10000).map(decodeRevision);
   if (new Set(movies.map(m => m.id)).size !== movies.length || new Set(revisions.map(v => v.id)).size !== revisions.length || revisions.some(v => !movies.some(m => m.id === v.movieId))) throw new ClassificationError("invalid_input");
-  return { version: "classification-snapshot-v1", modelId: text(r.modelId, 96), promptId: text(r.promptId, 96), rubric: rubricVersion, policy: policyVersion,
+  return { version: "classification-snapshot-v1", modelId: text(r.modelId, 96), promptId: text(r.promptId, 96), rubric: rubricVersion, policy: text(r.policy, 96),
     emotionalCap: r.emotionalCap === null ? null : integer(r.emotionalCap, 0, 4), movies, revisions,
     rejected: integer(r.rejected, 0, 10000), retentionDeadline: date(r.retentionDeadline) };
 }
